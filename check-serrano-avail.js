@@ -19,22 +19,37 @@ const parse = (json) => {
     return result;
 }
 
-const liveCheck = () => {
+const liveCheck = (interval = 30) => {
     var date = new Date()
     const minutes = date.getMinutes();
-    if (minutes % 5 == 0)
+    if (minutes % interval == 0)
     {
         sendMsgToWebhook("I am still alive.");
     }
 }
 
-const alertWhenTrue = async (resultMap) => {
+/**
+ * @todo print available sites
+ * @todo return filtered available sites
+ */
+const alertWhenTrue = async (
+    resultMap,
+    options = {
+        excludedSites : [],
+    }
+) => {
+    const excludedSites = options.excludedSites
+    console.log("excluding: " + excludedSites)
     const availableSites = _.filter(resultMap, (
         {
             siteNO,
             isAvailable,
         }
     ) => {
+        if (_.includes(excludedSites, siteNO)) {
+            return false
+        }
+
         return isAvailable;
     })
 
@@ -70,12 +85,14 @@ const sendMsgToWebhook = async ($msg) => {
     })
 }
 
+const excludedSites = ["092/93"];
+
 const execute = () => {
     axios.get('https://www.recreation.gov/api/camps/availability/campground/232250/month?start_date=2022-11-01T00%3A00%3A00.000Z')
     // Show response data
     .then(res => {
         const parsedRes = parse(res.data)
-        alertWhenTrue(parsedRes)
+        alertWhenTrue(parsedRes, {excludedSites})
     })
     .catch(err => console.log(err))
 }
