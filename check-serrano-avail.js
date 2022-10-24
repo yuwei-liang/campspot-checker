@@ -22,7 +22,7 @@ const parse = (json) => {
 const liveCheck = () => {
     var date = new Date()
     const minutes = date.getMinutes();
-    if (minutes % 30 == 0)
+    if (minutes % 5 == 0)
     {
         sendMsgToWebhook("I am still alive.");
     }
@@ -81,4 +81,4 @@ const execute = () => {
 }
 
 setInterval(execute, 5000);
-setInterval(liveCheck, 1000);
+setInterval(liveCheck, 60000);
