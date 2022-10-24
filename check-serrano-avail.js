@@ -19,7 +19,16 @@ const parse = (json) => {
     return result;
 }
 
-const alertWhenTrue = (resultMap) => {
+const liveCheck = () => {
+    var date = new Date()
+    const minutes = date.getMinutes();
+    if (minutes % 30 == 0)
+    {
+        sendMsgToWebhook("I am still alive.");
+    }
+}
+
+const alertWhenTrue = async (resultMap) => {
     const availableSites = _.filter(resultMap, (
         {
             siteNO,
@@ -29,19 +38,36 @@ const alertWhenTrue = (resultMap) => {
         return isAvailable;
     })
 
-    var date = Date.now()
     var date = new Date()
     const ts = date.toTimeString()
 
+    let report = ts
+    let hasFoundAvailables = false;
+
     if (availableSites.length > 0)
     {
-        console.log(`${ts} FOUND AVAILABLE SITES~`);
-        console.log(availableSites);
+        hasFoundAvailables = true;
+        report += 'FOUND AVAILABLE SITES~';
+        report += JSON.stringify(availableSites);
     }
     else
     {
-        console.log(`${ts} ALL RESERVED`)
+        report += "ALL RESERVED";
     }
+
+    console.log(report)
+    if (hasFoundAvailables)
+    {
+        await sendMsgToWebhook(report);
+    }
+}
+
+const sendMsgToWebhook = async ($msg) => {
+    const webhookURL = "https://discord.com/api/webhooks/1034203397802430504/DYpA_-yP2dWYQ9XpgI2xKsoK00sfDxBzni0D_IT1dXUw4o6t7A-4Uc_EjBQUN5YISe0M";
+    return axios.post(webhookURL, {
+        // content: "test",
+        content: $msg,
+    })
 }
 
 const execute = () => {
@@ -55,3 +81,4 @@ const execute = () => {
 }
 
 setInterval(execute, 5000);
+setInterval(liveCheck, 1000);
