@@ -1,6 +1,8 @@
 import Checker from './availability-checker/Checker.mjs'
 import express from 'express'
 import Notifier from './availability-checker/Notifier.mjs'
+import * as dotenv from 'dotenv'
+dotenv.config()
 const PORT = 8080
 const HOST = '0.0.0.0'
 const DISCORD_WEBHOOK = process.env.WEBHOOK_URL
@@ -51,6 +53,11 @@ const execute = () => {
     })
 }
 
+const printStartMsg = () => {
+    console.log("Discord webhook url:")
+    console.log(process.env.WEBHOOK_URL)
+}
+
 // App
 const app = express()
 app.get('/', (req, res) => {
@@ -58,7 +65,9 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, HOST, () => {
+    printStartMsg()
     console.log(`Running on http://${HOST}:${PORT}`);
+
     // first run
     execute()
 

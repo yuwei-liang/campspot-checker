@@ -1,3 +1,6 @@
+# Before run
+copy .env.example as .env and set the discord webhook url so that you can receive notifications
+
 # RUN
 ```
 npm i
