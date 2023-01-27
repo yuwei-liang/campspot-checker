@@ -3,7 +3,7 @@ import express from 'express'
 import Notifier from './availability-checker/Notifier.mjs'
 const PORT = 8080
 const HOST = '0.0.0.0'
-const DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1034203397802430504/DYpA_-yP2dWYQ9XpgI2xKsoK00sfDxBzni0D_IT1dXUw4o6t7A-4Uc_EjBQUN5YISe0M"
+const DISCORD_WEBHOOK = process.env.WEBHOOK_URL
 const TARGET_DATE = "2023-05-27T00:00:00Z"
 const campgrounds = [
     {
