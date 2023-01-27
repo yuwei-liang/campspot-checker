@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+ notes:
+  build:
+   context: .
+  ports:
+   - 49160:8080
+  environment:
+   - SERVER_PORT=8000
+  volumes:
+   - ./:/app
+   - /app/node_modules
+  command: node server.mjs
