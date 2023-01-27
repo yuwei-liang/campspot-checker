@@ -97,5 +97,5 @@ const execute = () => {
     .catch(err => console.log(err))
 }
 
-setInterval(execute, 5000);
-setInterval(liveCheck, 60000);
+setInterval(execute, 5000)
+setInterval(liveCheck, 60000)
