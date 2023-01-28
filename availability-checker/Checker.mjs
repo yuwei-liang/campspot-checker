@@ -1,15 +1,33 @@
 import axios from 'axios'
 import _ from 'lodash'
+import Campground from './Campground.mjs'
 import Notifier from './Notifier.mjs'
 const UNAVAILABLE_STATUSES = [
-    "Reserved", "Not Available", undefined, "Not Reservable Management"
+    "Reserved", "Not Available", undefined, "Not Reservable Management",
+    "NYR"
 ]
 // Declaration
 class Checker {
     excludedSites = []
-    constructor(targetDate, discordWebhookURL) {
+    campgrounds
+    constructor(campgrounds, targetDate, discordWebhookURL) {
         this.targetDate = targetDate
         this.notifier = new Notifier(discordWebhookURL)
+        this.campgrounds = campgrounds
+    }
+
+    async executeCheck() {
+        for (const campground of this.campgrounds) {
+            await this.checkCampground(campground)
+        }
+        // this.campgrounds.forEach(async campgroundJson => {
+        //     await this.__sleep(5000)
+        //     this.checkCampground(campgroundJson)
+        // })
+    }
+
+    __sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     __getSiteAvailabilities = (json) => {
@@ -47,7 +65,7 @@ class Checker {
      * @todo return filtered available sites
      */
     report = async (
-        campgroundName,
+        campground,
         res,
         options = {
             excludedSites: [],
@@ -69,11 +87,9 @@ class Checker {
             return isAvailable;
         })
 
-        var date = new Date()
-        // const ts = date.toTimeString()
-
         let report = ""
-        report += `[${campgroundName}]`
+        report += campground.toString()
+        // report += `[${campground.name}]`
         let hasFoundAvailables = false;
 
         if (availableSites.length > 0) {
@@ -94,15 +110,28 @@ class Checker {
         }
     }
 
-    checkCampground(campground) {
+    /**
+     * Get a Campground instance with provided json
+     * @param {object} campgroundJson
+     * @returns {Campground} campground instance
+     */
+    __createCampground(campgroundJson) {
         const {
             name,
             id,
-            url
-        } = campground
-        axios.get(url)
+            park
+        } = campgroundJson
+        return new Campground(name, id, park)
+    }
+
+    async checkCampground(campgroundJson) {
+        const campground = this.__createCampground(campgroundJson)
+        const url = campground.getAvailabilityUrl()
+
+        await this.__sleep(5000)
+        await axios.get(url)
             .then(res => {
-                this.report(name, res, { excludedSites: this.excludedSites })
+                this.report(campground, res, { excludedSites: this.excludedSites })
             })
             .catch(err => logger.error(err))
     }

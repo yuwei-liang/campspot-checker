@@ -38,6 +38,7 @@ import * as dotenv from 'dotenv'
 dotenv.config()
 
 // app
+import campgrounds from './campgrounds.json' assert { type: 'json' }
 import Checker from './availability-checker/Checker.mjs'
 import express from 'express'
 import Notifier from './availability-checker/Notifier.mjs'
@@ -46,28 +47,28 @@ const PORT = 8080
 const HOST = '0.0.0.0'
 const DISCORD_WEBHOOK = process.env.WEBHOOK_URL
 const TARGET_DATE = "2023-05-27T00:00:00Z"
-const campgrounds = [
-    {
-        name: "Lower Pines Campground",
-        id: 232450,
-        url: "https://www.recreation.gov/api/camps/availability/campground/232450/month?start_date=2023-05-01T00%3A00%3A00.000Z",
-    },
-    {
-        name: "North Pines Campground",
-        id: 232449,
-        url: "https://www.recreation.gov/api/camps/availability/campground/232449/month?start_date=2023-05-01T00%3A00%3A00.000Z",
-    },
-    {
-        name: "Wawona Campground",
-        id: 232446,
-        url: "https://www.recreation.gov/api/camps/availability/campground/232446/month?start_date=2023-05-01T00%3A00%3A00.000Z"
-    },
-    {
-        name: "Upper Pines Campground",
-        id: 232447,
-        url: "https://www.recreation.gov/api/camps/availability/campground/232447/month?start_date=2023-05-01T00%3A00%3A00.000Z"
-    }
-];
+// const campgrounds = [
+//     {
+//         name: "Lower Pines Campground",
+//         id: 232450,
+//         url: "https://www.recreation.gov/api/camps/availability/campground/232450/month?start_date=2023-05-01T00%3A00%3A00.000Z",
+//     },
+//     {
+//         name: "North Pines Campground",
+//         id: 232449,
+//         url: "https://www.recreation.gov/api/camps/availability/campground/232449/month?start_date=2023-05-01T00%3A00%3A00.000Z",
+//     },
+//     {
+//         name: "Wawona Campground",
+//         id: 232446,
+//         url: "https://www.recreation.gov/api/camps/availability/campground/232446/month?start_date=2023-05-01T00%3A00%3A00.000Z"
+//     },
+//     {
+//         name: "Upper Pines Campground",
+//         id: 232447,
+//         url: "https://www.recreation.gov/api/camps/availability/campground/232447/month?start_date=2023-05-01T00%3A00%3A00.000Z"
+//     }
+// ];
 
 // To tell discord this server is still running
 const liveCheck = (interval = 30) => {
@@ -85,12 +86,14 @@ const liveCheck = (interval = 30) => {
 const executeCheck = () => {
     logger.info("Executing ...")
     const checker = new Checker(
+        campgrounds,
         TARGET_DATE,
         DISCORD_WEBHOOK
     );
-    campgrounds.forEach(campgroundJson => {
-        checker.checkCampground(campgroundJson)
-    })
+    checker.executeCheck()
+    // campgrounds.forEach(campgroundJson => {
+    //     checker.checkCampground(campgroundJson)
+    // })
 }
 
 const printStartMsg = () => {
@@ -115,5 +118,5 @@ app.listen(PORT, HOST, () => {
     liveCheck()
 
     // repeated run
-    setInterval(executeCheck, 20000)
+    setInterval(executeCheck, 200000)
 });
