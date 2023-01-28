@@ -12,7 +12,6 @@ const logger = winston.createLogger({
         timestamp(),
         myFormat
     ),
-    // format: winston.format.json(),
     defaultMeta: { service: 'user-service' },
     transports: [
         //
@@ -47,28 +46,6 @@ const PORT = 8080
 const HOST = '0.0.0.0'
 const DISCORD_WEBHOOK = process.env.WEBHOOK_URL
 const TARGET_DATE = "2023-05-27T00:00:00Z"
-// const campgrounds = [
-//     {
-//         name: "Lower Pines Campground",
-//         id: 232450,
-//         url: "https://www.recreation.gov/api/camps/availability/campground/232450/month?start_date=2023-05-01T00%3A00%3A00.000Z",
-//     },
-//     {
-//         name: "North Pines Campground",
-//         id: 232449,
-//         url: "https://www.recreation.gov/api/camps/availability/campground/232449/month?start_date=2023-05-01T00%3A00%3A00.000Z",
-//     },
-//     {
-//         name: "Wawona Campground",
-//         id: 232446,
-//         url: "https://www.recreation.gov/api/camps/availability/campground/232446/month?start_date=2023-05-01T00%3A00%3A00.000Z"
-//     },
-//     {
-//         name: "Upper Pines Campground",
-//         id: 232447,
-//         url: "https://www.recreation.gov/api/camps/availability/campground/232447/month?start_date=2023-05-01T00%3A00%3A00.000Z"
-//     }
-// ];
 
 // To tell discord this server is still running
 const liveCheck = (interval = 30) => {
@@ -80,7 +57,6 @@ const liveCheck = (interval = 30) => {
             notifier.heartbeat()
         }
     }, 30000)
-
 }
 
 const executeCheck = () => {
@@ -91,9 +67,6 @@ const executeCheck = () => {
         DISCORD_WEBHOOK
     );
     checker.executeCheck()
-    // campgrounds.forEach(campgroundJson => {
-    //     checker.checkCampground(campgroundJson)
-    // })
 }
 
 const printStartMsg = () => {

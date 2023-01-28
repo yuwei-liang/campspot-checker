@@ -47,5 +47,10 @@
         "name": "Sentinel Campground",
         "park": "Sequoia",
         "id": 253917
+    },
+    {
+        "name": "Moraine Campground",
+        "park": "Sequoia",
+        "id": 10044761
     }
 ]
