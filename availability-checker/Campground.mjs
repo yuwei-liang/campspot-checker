@@ -1,11 +1,9 @@
 import Checker from "./Checker.mjs"
 
 class Campground {
-    url = ""
-    constructor(name, id, url, park = "") {
+    constructor(name, id, park = "") {
         this.name = name
         this.id = id
-        this.url = url
         this.park = park
     }
 
@@ -14,11 +12,6 @@ class Campground {
         const url = `https://www.recreation.gov/api/camps/availability/campground/${this.id}/month?start_date=2023-05-01T00%3A00%3A00.000Z`
         return url;
     }
-    // report() {
-    //     console.log("[%s]reporting...", this.name)
-    //     let checker = new Checker();
-    //     checker.check(this.url);
-    // }
 
     toString() {
         let desc = ``

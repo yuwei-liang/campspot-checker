@@ -118,5 +118,5 @@ app.listen(PORT, HOST, () => {
     liveCheck()
 
     // repeated run
-    setInterval(executeCheck, 200000)
+    setInterval(executeCheck, 30000)
 });

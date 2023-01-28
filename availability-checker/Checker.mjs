@@ -18,12 +18,10 @@ class Checker {
 
     async executeCheck() {
         for (const campground of this.campgrounds) {
+            await this.__sleep(2000)
             await this.checkCampground(campground)
         }
-        // this.campgrounds.forEach(async campgroundJson => {
-        //     await this.__sleep(5000)
-        //     this.checkCampground(campgroundJson)
-        // })
+        logger.info("Done!")
     }
 
     __sleep(ms) {
@@ -89,7 +87,6 @@ class Checker {
 
         let report = ""
         report += campground.toString()
-        // report += `[${campground.name}]`
         let hasFoundAvailables = false;
 
         if (availableSites.length > 0) {
@@ -128,7 +125,6 @@ class Checker {
         const campground = this.__createCampground(campgroundJson)
         const url = campground.getAvailabilityUrl()
 
-        await this.__sleep(5000)
         await axios.get(url)
             .then(res => {
                 this.report(campground, res, { excludedSites: this.excludedSites })
