@@ -16,4 +16,4 @@ COPY . .
 RUN chmod +x ./server.mjs
 
 EXPOSE 8080
-CMD [ "npm", "server.mjs" ]
+CMD [ "npm", "run", "start" ]

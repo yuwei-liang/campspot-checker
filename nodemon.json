@@ -1,6 +1,6 @@
 {
   "verbose": true,
-  "ignore": ["*.test.js", "**/fixtures/**"],
+  "ignore": ["*.test.js", "**/fixtures/**", "**/log/**"],
   "ext": "*.js,*.json,*.mjs",
   "execMap": {
     "sh": "sh"
