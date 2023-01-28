@@ -5,8 +5,8 @@
   "main": "server.mjs",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "babel-node --presets es2015 check-serrano-avail.js",
-    "start-hot-reload": "nodemon --exec \"sh\" ./start-server.sh"
+    "start": "nodemon --exec \"sh\" ./start-server.sh",
+    "start-hot-reload": "nodemon --exec \"sh\" ./start-server-dev.sh"
   },
   "author": "",
   "license": "ISC",

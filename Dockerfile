@@ -13,6 +13,7 @@ RUN npm install
 
 # Bundle app source
 COPY . .
+RUN chmod +x ./server.mjs
 
 EXPOSE 8080
-CMD [ "node", "server.mjs" ]
+CMD [ "npm", "server.mjs" ]
