@@ -70,9 +70,9 @@ class Checker {
         })
 
         var date = new Date()
-        const ts = date.toTimeString()
+        // const ts = date.toTimeString()
 
-        let report = ts
+        let report = ""
         report += `[${campgroundName}]`
         let hasFoundAvailables = false;
 
@@ -86,7 +86,7 @@ class Checker {
             report += "ALL RESERVED";
         }
 
-        console.log(report)
+        logger.info(report)
         if (hasFoundAvailables) {
             // await this.sendMsgToWebhook(report);
             this.notifier.notify(report)
@@ -104,7 +104,7 @@ class Checker {
             .then(res => {
                 this.report(name, res, { excludedSites: this.excludedSites })
             })
-            .catch(err => console.log(err))
+            .catch(err => logger.error(err))
     }
 }
 
