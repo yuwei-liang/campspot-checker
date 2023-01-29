@@ -51,13 +51,6 @@ class Checker {
         return result;
     }
 
-    sendMsgToWebhook = async ($msg) => {
-        const webhookURL = "https://discord.com/api/webhooks/1034203397802430504/DYpA_-yP2dWYQ9XpgI2xKsoK00sfDxBzni0D_IT1dXUw4o6t7A-4Uc_EjBQUN5YISe0M";
-        return axios.post(webhookURL, {
-            content: $msg,
-        })
-    }
-
     /**
      * @todo print available sites
      * @todo return filtered available sites
@@ -101,9 +94,7 @@ class Checker {
 
         logger.info(report)
         if (hasFoundAvailables) {
-            // await this.sendMsgToWebhook(report);
             this.notifier.notify(report)
-            // await
         }
     }
 
