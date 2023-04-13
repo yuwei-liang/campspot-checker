@@ -1,0 +1,10 @@
+2023-02-22T07:07:55.626Z info Discord webhook url:
+2023-02-22T07:07:55.627Z info undefined
+2023-02-22T07:07:55.627Z info Running on http://0.0.0.0:8080
+2023-02-22T07:07:55.627Z info Executing ...
+2023-02-22T07:07:58.018Z info [Yosemite][Lower Pines Campground][https://www.recreation.gov/api/camps/availability/campground/232450/month?start_date=2023-05-01T00%3A00%3A00.000Z]ALL RESERVED
+2023-02-22T07:08:00.248Z info [Yosemite][North Pines Campground][https://www.recreation.gov/api/camps/availability/campground/232449/month?start_date=2023-05-01T00%3A00%3A00.000Z]ALL RESERVED
+2023-02-22T07:08:03.594Z info [Yosemite][Wawona Campground][https://www.recreation.gov/api/camps/availability/campground/232446/month?start_date=2023-05-01T00%3A00%3A00.000Z]ALL RESERVED
+2023-02-22T07:08:05.957Z info [Yosemite][Upper Pines Campground][https://www.recreation.gov/api/camps/availability/campground/232447/month?start_date=2023-05-01T00%3A00%3A00.000Z]ALL RESERVED
+2023-02-22T07:08:08.267Z info [Sequoia][Sunset Campground][https://www.recreation.gov/api/camps/availability/campground/234752/month?start_date=2023-05-01T00%3A00%3A00.000Z]ALL RESERVED
+2023-02-22T07:08:10.386Z info [Sequoia][Lodgepole][https://www.recreation.gov/api/camps/availability/campground/232461/month?start_date=2023-05-01T00%3A00%3A00.000Z]ALL RESERVED
