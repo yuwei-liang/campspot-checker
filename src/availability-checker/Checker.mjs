@@ -10,6 +10,7 @@ const UNAVAILABLE_STATUSES = [
 class Checker {
     excludedSites = []
     campgrounds
+    logger
     constructor(campgrounds, targetDate, discordWebhookURL) {
         this.targetDate = targetDate
         this.notifier = new Notifier(discordWebhookURL)
@@ -21,7 +22,11 @@ class Checker {
             await this.__sleep(2000)
             await this.checkCampground(campground)
         }
-        logger.info("Done!")
+        // logger.info("Done!")
+    }
+
+    setLogger(logger) {
+        this.logger = logger
     }
 
     __sleep(ms) {

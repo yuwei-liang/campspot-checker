@@ -4,16 +4,22 @@ import Campground from './Campground.mjs'
 import Notifier from './Notifier.mjs'
 const UNAVAILABLE_STATUSES = [
     "Reserved", "Not Available", undefined, "Not Reservable Management",
-    "NYR"
+    "NYR", "Closed"
 ]
 // Declaration
 class Checker {
     excludedSites = []
     campgrounds
+    logger
+    targetDate
     constructor(campgrounds, targetDate, discordWebhookURL) {
         this.targetDate = targetDate
         this.notifier = new Notifier(discordWebhookURL)
         this.campgrounds = campgrounds
+    }
+
+    setLogger(logger) {
+        this.logger = logger
     }
 
     async executeCheck() {
@@ -21,7 +27,7 @@ class Checker {
             await this.__sleep(2000)
             await this.checkCampground(campground)
         }
-        logger.info("Done!")
+        this.logger.info("Done!")
     }
 
     __sleep(ms) {
@@ -45,6 +51,7 @@ class Checker {
                 siteNO,
                 isAvailable,
                 campsiteId: siteData.campsite_id,
+                loop: siteData.loop,
                 availability: targetAvailability,
             }
         })
@@ -62,6 +69,7 @@ class Checker {
             excludedSites: [],
         }
     ) => {
+        // console.log(res.data);
         const availabilities = this.__getSiteAvailabilities(res.data)
         const excludedSites = options.excludedSites
         // console.log("excluding: " + excludedSites)
@@ -78,8 +86,7 @@ class Checker {
             return isAvailable;
         })
 
-        let report = ""
-        report += campground.toString()
+        let report = `[${campground.id}]`
         let hasFoundAvailables = false;
 
         if (availableSites.length > 0) {
@@ -92,7 +99,7 @@ class Checker {
             report += "ALL RESERVED";
         }
 
-        logger.info(report)
+        this.logger.info(report)
         if (hasFoundAvailables) {
             this.notifier.notify(report)
         }
@@ -114,13 +121,21 @@ class Checker {
 
     async checkCampground(campgroundJson) {
         const campground = this.__createCampground(campgroundJson)
-        const url = campground.getAvailabilityUrl()
+        this.logger.info("what is targetDate: " + this.targetDate)
+        // get year and month from targetDate
+        const year = this.targetDate.split("-")[0]
+        const month = this.targetDate.split("-")[1]
+        const url = campground.getAvailabilityUrl(
+            year,
+            month
+        )
+        this.logger.info(`Checking ${url} ...`)
 
         await axios.get(url)
             .then(res => {
                 this.report(campground, res, { excludedSites: this.excludedSites })
             })
-            .catch(err => logger.error(err))
+            .catch(err => this.logger.error(err))
     }
 }
 

@@ -1,56 +1,5 @@
 [
     {
-        "park": "Yosemite",
-        "name": "Lower Pines Campground",
-        "id": 232450,
-        "url": "https://www.recreation.gov/api/camps/availability/campground/232450/month?start_date=2023-05-01T00%3A00%3A00.000Z"
-    },
-    {
-        "park": "Yosemite",
-        "name": "North Pines Campground",
-        "id": 232449,
-        "url": "https://www.recreation.gov/api/camps/availability/campground/232449/month?start_date=2023-05-01T00%3A00%3A00.000Z"
-    },
-    {
-        "park": "Yosemite",
-        "name": "Wawona Campground",
-        "id": 232446,
-        "url": "https://www.recreation.gov/api/camps/availability/campground/232446/month?start_date=2023-05-01T00%3A00%3A00.000Z"
-    },
-    {
-        "park": "Yosemite",
-        "name": "Upper Pines Campground",
-        "id": 232447,
-        "url": "https://www.recreation.gov/api/camps/availability/campground/232447/month?start_date=2023-05-01T00%3A00%3A00.000Z"
-    },
-    {
-        "name": "Sunset Campground",
-        "park": "Sequoia",
-        "id": 234752
-    },
-    {
-        "name": "Lodgepole",
-        "park": "Sequoia",
-        "id": 232461
-    },
-    {
-        "name": "Atwell Mill Campground",
-        "park": "Sequoia",
-        "id": 10044710
-    },
-    {
-        "name": "Buckeye Flat Campground",
-        "park": "Sequoia",
-        "id": 249982
-    },
-    {
-        "name": "Sentinel Campground",
-        "park": "Sequoia",
-        "id": 253917
-    },
-    {
-        "name": "Moraine Campground",
-        "park": "Sequoia",
-        "id": 10044761
+        "id": 272299
     }
 ]

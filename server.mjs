@@ -45,7 +45,7 @@ import Notifier from './availability-checker/Notifier.mjs'
 const PORT = 8080
 const HOST = '0.0.0.0'
 const DISCORD_WEBHOOK = process.env.WEBHOOK_URL
-const TARGET_DATE = "2023-05-27T00:00:00Z"
+const TARGET_DATE = "2023-08-12T00:00:00Z"
 
 // To tell discord this server is still running
 const liveCheck = (interval = 30) => {
@@ -66,6 +66,7 @@ const executeCheck = () => {
         TARGET_DATE,
         DISCORD_WEBHOOK
     );
+    checker.setLogger(logger)
     checker.executeCheck()
 }
 

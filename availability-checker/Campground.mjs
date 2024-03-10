@@ -8,8 +8,8 @@ class Campground {
     }
 
     // @TODO: supports month slection
-    getAvailabilityUrl() {
-        const url = `https://www.recreation.gov/api/camps/availability/campground/${this.id}/month?start_date=2023-05-01T00%3A00%3A00.000Z`
+    getAvailabilityUrl(year, month) {
+        const url = `https://www.recreation.gov/api/camps/availability/campground/${this.id}/month?start_date=${year}-${month}-01T00%3A00%3A00.000Z`
         return url;
     }
 

@@ -1,9 +1,27 @@
 import axios from 'axios'
+import winston from 'winston'
 
 class Notifier {
+    logger;
     discordWebhookURL = ""
     constructor(discordWebhookURL) {
         this.discordWebhookURL = discordWebhookURL
+        this.logger = winston.createLogger({
+            level: 'info',
+            // format: combine(
+            //     timestamp(),
+            //     myFormat
+            // ),
+            defaultMeta: { service: 'user-service' },
+            transports: [
+                //
+                // - Write all logs with importance level of `error` or less to `error.log`
+                // - Write all logs with importance level of `info` or less to `combined.log`
+                //
+                new winston.transports.File({ filename: 'log/error.log', level: 'error' }),
+                new winston.transports.File({ filename: 'log/combined.log' }),
+            ],
+        });
     }
 
     __limitSize(msg, defaultSize = 2000) {
@@ -21,6 +39,9 @@ class Notifier {
         const webhookURL = this.discordWebhookURL
         return axios.post(webhookURL, {
             content: msg
+        })
+        .catch((error) => {
+            this.logger.error(error)
         })
     }
 
