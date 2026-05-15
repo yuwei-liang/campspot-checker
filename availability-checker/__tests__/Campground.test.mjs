@@ -23,6 +23,21 @@ describe('Campground', () => {
         })
     })
 
+    describe('booking URLs', () => {
+        test('getBookingUrl returns user-facing campground page', () => {
+            const c = new Campground('Upper Pines', 232447, 'Yosemite')
+            expect(c.getBookingUrl()).toBe(
+                'https://www.recreation.gov/camping/campgrounds/232447'
+            )
+        })
+
+        test('getCampsiteUrl returns user-facing site page', () => {
+            expect(Campground.getCampsiteUrl('98765')).toBe(
+                'https://www.recreation.gov/camping/campsites/98765'
+            )
+        })
+    })
+
     describe('toString', () => {
         test('formats with park, name, and id', () => {
             const c = new Campground('Upper Pines Campground', 232447, 'Yosemite')

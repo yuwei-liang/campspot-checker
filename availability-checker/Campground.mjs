@@ -15,6 +15,14 @@ class Campground {
         return `https://www.recreation.gov/api/camps/availability/campground/${this.id}/month?start_date=${encodeURIComponent(monthStart)}`
     }
 
+    getBookingUrl() {
+        return `https://www.recreation.gov/camping/campgrounds/${this.id}`
+    }
+
+    static getCampsiteUrl(campsiteId) {
+        return `https://www.recreation.gov/camping/campsites/${campsiteId}`
+    }
+
     toString() {
         let desc = ``
         if (this.park) {

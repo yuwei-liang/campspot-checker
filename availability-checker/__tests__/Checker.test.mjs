@@ -107,6 +107,26 @@ describe('Checker', () => {
         expect(checker.getBackoffMs()).toBe(30 * 1000)
     })
 
+    test('formatAvailabilityMessage includes campground booking link and per-site URLs', () => {
+        const checker = new Checker([], TARGET_DATE, WEBHOOK, MONTH_START)
+        const campground = {
+            toString: () => '[Yosemite][Upper Pines Campground][id:232447]',
+            getBookingUrl: () => 'https://www.recreation.gov/camping/campgrounds/232447',
+        }
+        const sites = [
+            { siteNO: '044', campsiteId: '100' },
+            { siteNO: '045', campsiteId: '101' },
+        ]
+
+        const msg = checker.formatAvailabilityMessage(campground, sites, TARGET_DATE)
+
+        expect(msg).toContain('[Yosemite][Upper Pines Campground][id:232447]')
+        expect(msg).toContain('2 site(s) available on 2026-06-27')
+        expect(msg).toContain('https://www.recreation.gov/camping/campgrounds/232447')
+        expect(msg).toContain('Site 044: https://www.recreation.gov/camping/campsites/100')
+        expect(msg).toContain('Site 045: https://www.recreation.gov/camping/campsites/101')
+    })
+
     test('__resetBackoff zeroes out state', () => {
         const checker = new Checker([], TARGET_DATE, WEBHOOK, MONTH_START)
         checker.backoffMs = 5000

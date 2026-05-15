@@ -76,6 +76,21 @@ class Checker {
         return result;
     }
 
+    /**
+     * Pure formatter: takes a campground + a list of available sites and
+     * produces a Discord-friendly message with booking links.
+     * Exported as a method so it's directly testable.
+     */
+    formatAvailabilityMessage(campground, availableSites, targetDate) {
+        const header = `${campground.toString()} ${availableSites.length} site(s) available on ${targetDate}`
+        const bookingLink = `Book: ${campground.getBookingUrl()}`
+        const siteLines = availableSites.map(({ siteNO, campsiteId }) => {
+            const url = Campground.getCampsiteUrl(campsiteId)
+            return `- Site ${siteNO}: ${url}`
+        })
+        return [header, bookingLink, ...siteLines].join('\n')
+    }
+
     report = (campground, res, options = { excludedSites: [] }) => {
         const availabilities = this.__getSiteAvailabilities(res.data)
         const excludedSites = options.excludedSites
@@ -86,21 +101,12 @@ class Checker {
             return isAvailable;
         })
 
-        let report = ""
-        report += campground.toString()
-        let hasFoundAvailables = false;
-
         if (availableSites.length > 0) {
-            hasFoundAvailables = true;
-            report += 'FOUND AVAILABLE SITES~';
-            report += JSON.stringify(availableSites);
+            const message = this.formatAvailabilityMessage(campground, availableSites, this.targetDate)
+            logger.info(message)
+            this.notifier.notify(message)
         } else {
-            report += "ALL RESERVED";
-        }
-
-        logger.info(report)
-        if (hasFoundAvailables) {
-            this.notifier.notify(report)
+            logger.info(`${campground.toString()} ALL RESERVED`)
         }
     }
 

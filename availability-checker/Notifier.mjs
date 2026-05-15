@@ -1,27 +1,24 @@
 import axios from 'axios'
 
+const DISCORD_MAX_LENGTH = 2000
+const TRUNCATION_SUFFIX = '\n...[truncated]'
+
 class Notifier {
     discordWebhookURL = ""
     constructor(discordWebhookURL) {
         this.discordWebhookURL = discordWebhookURL
     }
 
-    __limitSize(msg, defaultSize = 2000) {
-        if (msg.length > defaultSize) {
-            msg = msg.substring(0, 500)
-            msg = "[Truncated]" + msg
+    __limitSize(msg, maxLength = DISCORD_MAX_LENGTH) {
+        if (msg.length <= maxLength) {
+            return msg
         }
-
-        return msg;
+        return msg.substring(0, maxLength - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX
     }
 
     notify(msg) {
         msg = this.__limitSize(msg)
-        // maximum length 2000
-        const webhookURL = this.discordWebhookURL
-        return axios.post(webhookURL, {
-            content: msg
-        })
+        return axios.post(this.discordWebhookURL, { content: msg })
     }
 
     heartbeat() {
