@@ -43,6 +43,7 @@ import { createAvailabilityRepo } from './availability-checker/db/availabilityRe
 import { createWeatherRepo } from './availability-checker/db/weatherRepo.mjs'
 import { scheduleWeatherRefresh } from './availability-checker/weatherService.mjs'
 import { STATUS_PAGE_HTML } from './availability-checker/statusPage.mjs'
+import { ABOUT_PAGE_HTML } from './availability-checker/aboutPage.mjs'
 import express from 'express'
 
 const PORT = Number.parseInt(process.env.PORT || '8787', 10)
@@ -129,6 +130,9 @@ app.use(express.json())
 app.use(express.static('public'))
 app.get('/', (req, res) => {
     res.type('html').send(STATUS_PAGE_HTML);
+});
+app.get('/about', (req, res) => {
+    res.type('html').send(ABOUT_PAGE_HTML);
 });
 app.get('/api/status', (req, res) => {
     res.json({

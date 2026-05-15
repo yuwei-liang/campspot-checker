@@ -387,7 +387,7 @@ export const STATUS_PAGE_HTML = `<!doctype html>
 
   <div class="footer">
     <span id="footer-text"></span>
-    <a href="/api/status">/api/status</a> · <a href="/api/history">/api/history</a>
+    <a href="/about" id="about-link"></a> · <a href="/api/status">/api/status</a> · <a href="/api/history">/api/history</a>
   </div>
 </div>
 
@@ -437,6 +437,7 @@ const I18N = {
     ago_min: (m) => \`\${m}m ago\`,
     ago_hour: (h) => \`\${h}h ago\`,
     site_prefix: "Site",
+    about_link: "How it works",
   },
   zh: {
     brand_name: "霞客",
@@ -482,6 +483,7 @@ const I18N = {
     ago_min: (m) => \`\${m} 分钟前\`,
     ago_hour: (h) => \`\${h} 小时前\`,
     site_prefix: "营位",
+    about_link: "工作原理",
   },
 }
 
@@ -728,6 +730,7 @@ const applyLang = () => {
   document.getElementById('poll-btn').textContent = T().poll_now
   document.getElementById('recent-events-heading').textContent = T().recent_events
   document.getElementById('footer-text').textContent = T().footer
+  document.getElementById('about-link').textContent = T().about_link
   document.getElementById('discord-link').textContent = T().join_discord
   for (const b of document.querySelectorAll('.lang-switch button')) {
     b.classList.toggle('active', b.dataset.lang === lang)

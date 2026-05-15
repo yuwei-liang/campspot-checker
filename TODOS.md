@@ -18,17 +18,6 @@
 **Pros:** Prevents the next silent-broken bug.
 **Cons:** Requires refactoring `Checker` to accept an axios client via DI (or wrestling with jest's experimental ESM module mocking).
 **Context:** Jest is wired up via `node --experimental-vm-modules`. Tests live in `availability-checker/__tests__/`.
-**Depends on:** orphan src/ cleanup (below), so tests don't have to dodge dead code paths.
-
-## Delete duplicate src/availability-checker/ tree
-**What:** Two copies of the checker code exist: `availability-checker/` (used, working) and `src/availability-checker/` (orphan, half-finished WIP with a typo `this.targetDatae` on line 62, plus committed log files in `src/availability-checker/log/`). Delete the orphan tree.
-
-**Why:** Next contributor (or future-you) will spend 10 minutes confused about which Checker is real. The committed log files are also pollution.
-
-**Pros:** Clarity for future readers; removes a typo'd identifier that grep will hit.
-**Cons:** Touches `jest.config.js` (can drop the `testPathIgnorePatterns` entry for `src/`).
-**Context:** `server.mjs` imports from `./availability-checker/Checker.mjs`, so `src/availability-checker` is definitely the orphan. The WIP code there hints at a planned multi-date feature that was never finished.
-**Depends on:** none.
 
 ## Circuit-break on sustained API failures
 **What:** Today the backoff caps at 10 minutes and keeps retrying forever. Add a circuit breaker: after N consecutive failures (e.g. 5), enter an "open" state and stop polling for a longer cooldown (e.g. 1 hour). Log loudly so operator notices.
