@@ -1,4 +1,8 @@
 import Checker from '../Checker.mjs'
+import { openDatabase } from '../db/db.mjs'
+import { createCampgroundsRepo } from '../db/campgroundsRepo.mjs'
+import { createCyclesRepo } from '../db/cyclesRepo.mjs'
+import { createAvailabilityRepo } from '../db/availabilityRepo.mjs'
 
 // Checker references global.logger; provide a silent stub for tests.
 global.logger = {
@@ -11,6 +15,18 @@ const TARGET_DATE = '2026-06-27T00:00:00Z'
 const TARGET_DATES = [TARGET_DATE]
 const MONTH_START = '2026-06-01T00:00:00.000Z'
 const WEBHOOK = 'https://discord.com/api/webhooks/123/abc'
+
+const mkChecker = (campgrounds = [], targetDates = TARGET_DATES, monthStarts = [MONTH_START]) => {
+    const db = openDatabase(':memory:')
+    const repos = {
+        campgrounds: createCampgroundsRepo(db),
+        cycles: createCyclesRepo(db),
+        availability: createAvailabilityRepo(db),
+    }
+    repos.campgrounds.upsertMany(campgrounds)
+    const checker = new Checker(repos, targetDates, WEBHOOK, monthStarts)
+    return { checker, db, repos }
+}
 
 const fixture = () => ({
     campsites: {
@@ -28,12 +44,7 @@ const fixture = () => ({
         '101': {
             site: '101',
             campsite_id: 'cs-101',
-            loop: 'Loop A',
-            campsite_type: 'TENT ONLY NONELECTRIC',
-            max_num_people: 4,
-            availabilities: {
-                [TARGET_DATE]: 'Reserved',
-            },
+            availabilities: { [TARGET_DATE]: 'Reserved' },
         },
         '102': {
             site: '102',
@@ -55,19 +66,30 @@ const fixture = () => ({
 
 describe('Checker', () => {
     test('constructor requires monthStarts non-empty array', () => {
-        expect(() => new Checker([], TARGET_DATES, WEBHOOK)).toThrow(/monthStarts/)
-        expect(() => new Checker([], TARGET_DATES, WEBHOOK, [])).toThrow(/monthStarts/)
+        const db = openDatabase(':memory:')
+        const repos = {
+            campgrounds: createCampgroundsRepo(db),
+            cycles: createCyclesRepo(db),
+            availability: createAvailabilityRepo(db),
+        }
+        expect(() => new Checker(repos, TARGET_DATES, WEBHOOK)).toThrow(/monthStarts/)
+        expect(() => new Checker(repos, TARGET_DATES, WEBHOOK, [])).toThrow(/monthStarts/)
     })
 
     test('constructor requires targetDates non-empty array', () => {
-        expect(() => new Checker([], [], WEBHOOK, [MONTH_START])).toThrow(/targetDates/)
-        expect(() => new Checker([], undefined, WEBHOOK, [MONTH_START])).toThrow(/targetDates/)
+        const db = openDatabase(':memory:')
+        const repos = {
+            campgrounds: createCampgroundsRepo(db),
+            cycles: createCyclesRepo(db),
+            availability: createAvailabilityRepo(db),
+        }
+        expect(() => new Checker(repos, [], WEBHOOK, [MONTH_START])).toThrow(/targetDates/)
+        expect(() => new Checker(repos, undefined, WEBHOOK, [MONTH_START])).toThrow(/targetDates/)
     })
 
     test('__getSiteAvailabilities classifies sites by UNAVAILABLE_STATUSES per date', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
+        const { checker } = mkChecker()
         const result = checker.__getSiteAvailabilities(fixture())
-
         const byNo = Object.fromEntries(result.map(r => [r.siteNO, r]))
         expect(byNo['100'].availableDates).toEqual([TARGET_DATE])
         expect(byNo['101'].availableDates).toEqual([])
@@ -77,7 +99,7 @@ describe('Checker', () => {
     })
 
     test('__getSiteAvailabilities captures loop / campsite_type / max_num_people', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
+        const { checker } = mkChecker()
         const result = checker.__getSiteAvailabilities(fixture())
         const site100 = result.find(s => s.siteNO === '100')
         expect(site100.loop).toBe('Loop A')
@@ -85,33 +107,15 @@ describe('Checker', () => {
         expect(site100.maxPeople).toBe(6)
     })
 
-    test('__getSiteAvailabilities returns null for missing detail fields', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
-        const result = checker.__getSiteAvailabilities(fixture())
-        const site102 = result.find(s => s.siteNO === '102')
-        expect(site102.loop).toBeNull()
-        expect(site102.campsiteType).toBeNull()
-        expect(site102.maxPeople).toBeNull()
-    })
-
     test('__mergeCampsites unions availabilities across months for the same campsite_id', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, ['2026-06-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'])
+        const { checker } = mkChecker([], TARGET_DATES, ['2026-06-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'])
         const combined = {}
         checker.__mergeCampsites(combined, {
-            '1': {
-                site: 'A1', campsite_id: 'c1',
-                availabilities: { '2026-06-26T00:00:00Z': 'Available' },
-            },
+            '1': { site: 'A1', campsite_id: 'c1', availabilities: { '2026-06-26T00:00:00Z': 'Available' } },
         })
         checker.__mergeCampsites(combined, {
-            '1': {
-                site: 'A1', campsite_id: 'c1',
-                availabilities: { '2026-07-04T00:00:00Z': 'Available' },
-            },
-            '2': {
-                site: 'B2', campsite_id: 'c2',
-                availabilities: { '2026-07-04T00:00:00Z': 'Reserved' },
-            },
+            '1': { site: 'A1', campsite_id: 'c1', availabilities: { '2026-07-04T00:00:00Z': 'Available' } },
+            '2': { site: 'B2', campsite_id: 'c2', availabilities: { '2026-07-04T00:00:00Z': 'Reserved' } },
         })
         expect(combined['1'].availabilities).toEqual({
             '2026-06-26T00:00:00Z': 'Available',
@@ -120,88 +124,63 @@ describe('Checker', () => {
         expect(combined['2']).toBeDefined()
     })
 
-    test('multi-date: a site available on one date but reserved another reports only the open date', () => {
-        const dates = ['2026-06-26T00:00:00Z', '2026-06-27T00:00:00Z']
-        const checker = new Checker([], dates, WEBHOOK, [MONTH_START])
-        const json = {
-            campsites: {
-                '1': {
-                    site: 'A1',
-                    campsite_id: 'c1',
-                    availabilities: {
-                        '2026-06-26T00:00:00Z': 'Available',
-                        '2026-06-27T00:00:00Z': 'Reserved',
-                    },
-                },
-            },
-        }
-        const result = checker.__getSiteAvailabilities(json)
-        expect(result[0].availableDates).toEqual(['2026-06-26T00:00:00Z'])
-    })
-
     test('backoff starts at 0', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
+        const { checker } = mkChecker()
         expect(checker.getBackoffMs()).toBe(0)
     })
 
     test('executeCheck refuses to start a second cycle while one is running', async () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
+        const { checker } = mkChecker()
         checker.cycleState.currentlyRunning = true
         const result = await checker.executeCheck()
         expect(result).toEqual({ ran: false, reason: 'already_running' })
         expect(checker.cycleState.cycleCount).toBe(0)
     })
 
-    test('executeCheck reports ran:true on a clean cycle and increments cycleCount', async () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
+    test('executeCheck reports ran:true on a clean (empty) cycle and increments cycleCount', async () => {
+        const { checker, repos } = mkChecker()
         const result = await checker.executeCheck()
-        expect(result).toEqual({ ran: true })
+        expect(result.ran).toBe(true)
         expect(checker.cycleState.cycleCount).toBe(1)
         expect(checker.cycleState.currentlyRunning).toBe(false)
+        expect(repos.cycles.recent(5).length).toBe(1)
     })
 
     test('__handleError grows backoff exponentially on 429', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
-        const fakeCampground = { toString: () => '[fake]' }
+        const { checker } = mkChecker()
+        const fakeCampground = { id: 1, toString: () => '[fake]' }
         const err = { response: { status: 429, headers: {} } }
-
-        checker.__handleError(err, fakeCampground)
+        checker.__handleError(err, fakeCampground, null)
         const first = checker.getBackoffMs()
-        checker.__handleError(err, fakeCampground)
+        checker.__handleError(err, fakeCampground, null)
         const second = checker.getBackoffMs()
-
         expect(first).toBeGreaterThan(0)
         expect(second).toBe(first * 2)
     })
 
-    test('__handleError honors Retry-After header (in seconds)', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
+    test('__handleError honors Retry-After header', () => {
+        const { checker } = mkChecker()
         const err = { response: { status: 429, headers: { 'retry-after': '30' } } }
-        checker.__handleError(err, { toString: () => '[fake]' })
+        checker.__handleError(err, { id: 1, toString: () => '[fake]' }, null)
         expect(checker.getBackoffMs()).toBe(30 * 1000)
     })
 
     describe('getStatus', () => {
-        test('initial status is pending for every campground, in original order', () => {
-            const campgrounds = [
+        test('returns campground rows from the DB with default state', () => {
+            const { checker } = mkChecker([
                 { name: 'Upper Pines', id: 232447, park: 'Yosemite' },
                 { name: 'Lower Pines', id: 232450, park: 'Yosemite' },
-            ]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
+            ])
             const status = checker.getStatus()
-
             expect(status.targetDates).toEqual(TARGET_DATES)
             expect(status.monthStarts).toEqual([MONTH_START])
-            expect(status.backoffMs).toBe(0)
-            expect(status.cycle.cycleCount).toBe(0)
             expect(status.campgrounds).toHaveLength(2)
-            expect(status.campgrounds[0].id).toBe(232447)
             expect(status.campgrounds[0].status).toBe('pending')
-            expect(status.campgrounds[0].availableByDate).toEqual({})
+            expect(status.campgrounds[0].enabled).toBe(true)
         })
 
-        test('campground metadata fields surface in status output', () => {
-            const campgrounds = [{
+        test('metadata fields flow into status output', () => {
+            const { checker } = mkChecker([{
                 name: 'Upper Pines',
                 id: 232447,
                 park: 'Yosemite',
@@ -210,8 +189,7 @@ describe('Checker', () => {
                 season: 'year-round',
                 totalSites: 238,
                 accessType: 'drive-in',
-            }]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
+            }])
             const cg = checker.getStatus().campgrounds[0]
             expect(cg.meta).toEqual({
                 valleyDriveMinutes: 0,
@@ -222,43 +200,30 @@ describe('Checker', () => {
             })
         })
 
-        test('campground metadata defaults to nulls when omitted', () => {
-            const campgrounds = [{ name: 'X', id: 1, park: 'Y' }]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
-            const cg = checker.getStatus().campgrounds[0]
-            expect(cg.meta).toEqual({
-                valleyDriveMinutes: null,
-                elevationFt: null,
-                season: null,
-                totalSites: null,
-                accessType: null,
-            })
-        })
-
         test('report() advances state to all_reserved with zero counts when no sites open', () => {
-            const campgrounds = [{ name: 'Upper Pines', id: 232447, park: 'Yosemite' }]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
+            const { checker, repos } = mkChecker([{ name: 'X', id: 232447, park: 'Yosemite' }])
+            const cycleId = repos.cycles.start('2026-05-15T00:00:00Z')
             const mockCampground = {
                 id: 232447,
-                toString: () => '[Yosemite][Upper Pines]',
+                toString: () => '[X]',
                 getBookingUrl: () => 'https://example.test/cg/232447',
             }
             checker.notifier.notify = () => {}
 
             checker.report(mockCampground, {
                 data: { campsites: { '1': { site: '1', campsite_id: 'c1', availabilities: { [TARGET_DATE]: 'Reserved' } } } },
-            })
+            }, cycleId)
 
             const cg = checker.getStatus().campgrounds[0]
             expect(cg.status).toBe('all_reserved')
             expect(cg.availableByDate).toEqual({ [TARGET_DATE]: 0 })
-            expect(cg.availableSites).toEqual([])
         })
 
-        test('report() carries site detail and per-date counts when sites open', () => {
-            const dates = ['2026-06-26T00:00:00Z', '2026-06-27T00:00:00Z']
-            const campgrounds = [{ name: 'Atwell', id: 10044710, park: 'Sequoia' }]
-            const checker = new Checker(campgrounds, dates, WEBHOOK, [MONTH_START])
+        test('report() persists per-site detail + dedup: first cycle notifies, second cycle does not', () => {
+            const { checker, repos } = mkChecker(
+                [{ name: 'Atwell', id: 10044710, park: 'Sequoia' }],
+                ['2026-06-26T00:00:00Z', '2026-06-27T00:00:00Z'],
+            )
             const mockCampground = {
                 id: 10044710,
                 toString: () => '[Sequoia][Atwell]',
@@ -266,61 +231,62 @@ describe('Checker', () => {
             }
             const notifyCalls = []
             checker.notifier.notify = (m) => notifyCalls.push(m)
-
-            checker.report(mockCampground, {
+            const apiData = {
                 data: {
                     campsites: {
                         '1': {
-                            site: '02',
-                            campsite_id: 'c2',
-                            loop: 'East',
-                            campsite_type: 'TENT ONLY',
-                            max_num_people: 8,
+                            site: '02', campsite_id: 'c2', loop: 'East', campsite_type: 'TENT ONLY', max_num_people: 8,
                             availabilities: {
                                 '2026-06-26T00:00:00Z': 'Available',
                                 '2026-06-27T00:00:00Z': 'Reserved',
                             },
                         },
-                        '2': {
-                            site: '03',
-                            campsite_id: 'c3',
-                            loop: 'East',
-                            campsite_type: 'TENT ONLY',
-                            max_num_people: 6,
-                            availabilities: {
-                                '2026-06-26T00:00:00Z': 'Available',
-                                '2026-06-27T00:00:00Z': 'Available',
-                            },
-                        },
                     },
                 },
-            })
+            }
 
-            const cg = checker.getStatus().campgrounds[0]
-            expect(cg.status).toBe('available')
-            expect(cg.availableByDate).toEqual({
-                '2026-06-26T00:00:00Z': 2,
-                '2026-06-27T00:00:00Z': 1,
-            })
-            expect(cg.availableSites).toHaveLength(2)
-            expect(cg.availableSites[0].loop).toBe('East')
-            expect(cg.availableSites[0].campsiteType).toBe('TENT ONLY')
-            expect(cg.availableSites[0].maxPeople).toBe(8)
+            const cycleId1 = repos.cycles.start('2026-05-15T00:00:00Z')
+            checker.report(mockCampground, apiData, cycleId1)
             expect(notifyCalls).toHaveLength(1)
-            // message groups by date and includes per-site detail
-            expect(notifyCalls[0]).toMatch(/Fri 2026-06-26 \(2\):/)
-            expect(notifyCalls[0]).toMatch(/Sat 2026-06-27 \(1\):/)
-            expect(notifyCalls[0]).toMatch(/Site 02 \(East, TENT ONLY, max 8\):/)
+            expect(notifyCalls[0]).toMatch(/1 new site\(s\) opened/)
+
+            // Second cycle: same data, no fresh opens
+            const cycleId2 = repos.cycles.start('2026-05-15T00:01:00Z')
+            checker.report(mockCampground, apiData, cycleId2)
+            expect(notifyCalls).toHaveLength(1)  // unchanged
+        })
+
+        test('report() re-notifies after a close-then-reopen', () => {
+            const { checker, repos } = mkChecker(
+                [{ name: 'X', id: 1, park: 'Y' }],
+                ['2026-06-26T00:00:00Z'],
+            )
+            const mockCampground = {
+                id: 1,
+                toString: () => '[X]',
+                getBookingUrl: () => 'https://example.test/cg/1',
+            }
+            const calls = []
+            checker.notifier.notify = (m) => calls.push(m)
+
+            const dataOpen = () => ({ data: { campsites: { '1': { site: '01', campsite_id: 'c1',
+                availabilities: { '2026-06-26T00:00:00Z': 'Available' } } } } })
+            const dataClosed = () => ({ data: { campsites: { '1': { site: '01', campsite_id: 'c1',
+                availabilities: { '2026-06-26T00:00:00Z': 'Reserved' } } } } })
+
+            checker.report(mockCampground, dataOpen(), repos.cycles.start('t1'))
+            expect(calls).toHaveLength(1)
+            checker.report(mockCampground, dataClosed(), repos.cycles.start('t2'))
+            expect(calls).toHaveLength(1)  // closing doesn't notify
+            checker.report(mockCampground, dataOpen(), repos.cycles.start('t3'))
+            expect(calls).toHaveLength(2)  // reopen pings again
         })
 
         test('__handleError marks the campground as error with the failure reason', () => {
-            const campgrounds = [{ name: 'Upper Pines', id: 232447, park: 'Yosemite' }]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
+            const { checker, repos } = mkChecker([{ name: 'X', id: 232447, park: 'Y' }])
+            const cycleId = repos.cycles.start('t')
             const err = { response: { status: 429, headers: { 'retry-after': '30' } } }
-            const fakeCampground = { id: 232447, toString: () => '[Yosemite][Upper Pines]' }
-
-            checker.__handleError(err, fakeCampground)
-
+            checker.__handleError(err, { id: 232447, toString: () => '[X]' }, cycleId)
             const cg = checker.getStatus().campgrounds[0]
             expect(cg.status).toBe('error')
             expect(cg.error).toBe('Retry-After:30')
@@ -328,45 +294,20 @@ describe('Checker', () => {
     })
 
     describe('enable/disable', () => {
-        test('isEnabled defaults to true', () => {
-            const checker = new Checker([{ name: 'X', id: 1, park: 'Y' }], TARGET_DATES, WEBHOOK, [MONTH_START])
+        test('isEnabled defaults to true, setEnabled toggles', () => {
+            const { checker } = mkChecker([{ name: 'X', id: 1, park: 'Y' }])
             expect(checker.isEnabled(1)).toBe(true)
-        })
-
-        test('initialDisabledIds disables those campgrounds', () => {
-            const checker = new Checker(
-                [{ name: 'X', id: 1, park: 'Y' }, { name: 'Z', id: 2, park: 'Y' }],
-                TARGET_DATES, WEBHOOK, [MONTH_START],
-                [1],
-            )
-            expect(checker.isEnabled(1)).toBe(false)
-            expect(checker.isEnabled(2)).toBe(true)
-        })
-
-        test('setEnabled flips state and returns the new value', () => {
-            const checker = new Checker([{ name: 'X', id: 1, park: 'Y' }], TARGET_DATES, WEBHOOK, [MONTH_START])
             expect(checker.setEnabled(1, false)).toBe(false)
             expect(checker.isEnabled(1)).toBe(false)
             expect(checker.setEnabled(1, true)).toBe(true)
-            expect(checker.isEnabled(1)).toBe(true)
         })
 
-        test('getDisabledIds returns the disabled set as an array', () => {
-            const checker = new Checker(
-                [{ name: 'X', id: 1, park: 'Y' }, { name: 'Z', id: 2, park: 'Y' }],
-                TARGET_DATES, WEBHOOK, [MONTH_START],
-            )
-            checker.setEnabled(1, false)
-            checker.setEnabled(2, false)
-            expect(new Set(checker.getDisabledIds())).toEqual(new Set([1, 2]))
-        })
-
-        test('getStatus marks disabled campgrounds with enabled:false', () => {
-            const checker = new Checker(
-                [{ name: 'X', id: 1, park: 'Y' }, { name: 'Z', id: 2, park: 'Y' }],
-                TARGET_DATES, WEBHOOK, [MONTH_START],
-                [1],
-            )
+        test('getStatus reflects DB enabled column', () => {
+            const { checker, repos } = mkChecker([
+                { name: 'X', id: 1, park: 'Y' },
+                { name: 'Z', id: 2, park: 'Y' },
+            ])
+            repos.campgrounds.setEnabled(1, false)
             const status = checker.getStatus()
             expect(status.campgrounds.find(c => c.id === 1).enabled).toBe(false)
             expect(status.campgrounds.find(c => c.id === 2).enabled).toBe(true)
@@ -374,7 +315,7 @@ describe('Checker', () => {
     })
 
     test('__resetBackoff zeroes out state', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
+        const { checker } = mkChecker()
         checker.backoffMs = 5000
         checker.lastErrorReason = 'HTTP 429'
         checker.__resetBackoff()

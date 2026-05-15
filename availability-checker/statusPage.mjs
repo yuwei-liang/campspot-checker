@@ -57,6 +57,15 @@ export const STATUS_PAGE_HTML = `<!doctype html>
   .site-detail { font-size: 11px; opacity: 0.65; margin-left: 6px; }
   .site-dates { display: inline-block; margin-left: 6px; }
   .more { font-size: 11px; opacity: 0.6; padding-top: 4px; }
+  .panel { margin-top: 32px; }
+  .panel h2 { font-size: 14px; margin: 0 0 8px; }
+  .event-row { padding: 4px 0; border-bottom: 1px solid #ccc3; display: grid;
+               grid-template-columns: 90px 1fr 80px 140px; gap: 8px; align-items: baseline;
+               font-size: 12px; line-height: 1.4; }
+  .event-row .ev-time { opacity: 0.6; }
+  .event-row .ev-open { color: #1a7f1a; font-weight: 600; }
+  .event-row .ev-closed { color: #888; }
+  .empty-panel { font-size: 12px; opacity: 0.5; padding: 8px 0; }
   tr.disabled { opacity: 0.4; }
   tr.disabled td { background: repeating-linear-gradient(45deg, transparent, transparent 6px, #0000000a 6px, #0000000a 12px); }
   .toggle { cursor: pointer; }
@@ -85,7 +94,12 @@ export const STATUS_PAGE_HTML = `<!doctype html>
   </thead>
   <tbody id="rows"></tbody>
 </table>
-<div class="footer">Auto-refreshes every 5 seconds. Click a header to sort. <a href="/api/status">/api/status</a> for raw JSON.</div>
+<div class="panel">
+  <h2>Recent events</h2>
+  <div id="events" class="empty-panel">loading…</div>
+</div>
+
+<div class="footer">Auto-refreshes every 5 seconds. Click a header to sort. <a href="/api/status">/api/status</a> · <a href="/api/history">/api/history</a></div>
 
 <script>
 let lastData = null
@@ -309,8 +323,52 @@ const refresh = async () => {
   }
 }
 
+// Map of campground id → name, populated from /api/status data.
+const cgName = (id) => {
+  const cg = lastData?.campgrounds?.find(c => c.id === id)
+  return cg ? \`\${cg.park ? '[' + cg.park + '] ' : ''}\${cg.name}\` : 'id:' + id
+}
+
+const renderEvents = (events) => {
+  const el = document.getElementById('events')
+  if (!events.length) {
+    el.className = 'empty-panel'
+    el.innerHTML = 'no events yet — the very first cycle establishes the baseline.'
+    return
+  }
+  el.className = ''
+  el.innerHTML = events.map(ev => {
+    const datePart = ev.targetDate ? fmtDateShort(ev.targetDate) : '—'
+    const cls = ev.event === 'opened' ? 'ev-open' : 'ev-closed'
+    const siteUrl = \`https://www.recreation.gov/camping/campsites/\${escape(ev.campsiteId)}\`
+    const detail = [ev.loop, ev.campsiteType, ev.maxPeople ? \`max \${ev.maxPeople}\` : null]
+      .filter(Boolean).join(' · ')
+    return \`<div class="event-row">
+      <span class="ev-time">\${fmtAgo(ev.seenAt)}</span>
+      <span>\${escape(cgName(ev.campgroundId))} <a href="\${siteUrl}" target="_blank">Site \${escape(ev.siteNo || ev.campsiteId)}</a>
+            \${detail ? '<span class="site-detail">' + escape(detail) + '</span>' : ''}</span>
+      <span class="\${cls}">\${ev.event}</span>
+      <span>\${escape(datePart)}</span>
+    </div>\`
+  }).join('')
+}
+
+const refreshEvents = async () => {
+  try {
+    const res = await fetch('/api/history?limit=50')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    renderEvents(data.events || [])
+  } catch (e) {
+    document.getElementById('events').innerHTML =
+      \`<span class="err">failed to load /api/history: \${escape(e.message)}</span>\`
+  }
+}
+
 refresh()
+refreshEvents()
 setInterval(refresh, 5000)
+setInterval(refreshEvents, 10000)
 
 const pollBtn = document.getElementById('poll-btn')
 const pollFlash = document.getElementById('poll-flash')

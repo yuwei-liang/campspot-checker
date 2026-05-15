@@ -22,22 +22,23 @@ const MAX_BACKOFF_MS = 10 * 60 * 1000
 
 class Checker {
     excludedSites = []
-    campgrounds
     backoffMs = 0
     lastErrorReason = null
 
-    constructor(campgrounds, targetDates, discordWebhookURL, monthStarts, initialDisabledIds = []) {
+    /**
+     * @param {object} repos { campgrounds, cycles, availability }
+     */
+    constructor(repos, targetDates, discordWebhookURL, monthStarts) {
         if (!Array.isArray(monthStarts) || monthStarts.length === 0) {
             throw new Error('Checker: monthStarts must be a non-empty array')
         }
         if (!Array.isArray(targetDates) || targetDates.length === 0) {
             throw new Error('Checker: targetDates must be a non-empty array')
         }
+        this.repos = repos
         this.targetDates = targetDates
         this.monthStarts = monthStarts
         this.notifier = new Notifier(discordWebhookURL)
-        this.campgrounds = campgrounds
-        this.disabledIds = new Set(initialDisabledIds.map(Number))
 
         this.cycleState = {
             lastStartedAt: null,
@@ -46,24 +47,28 @@ class Checker {
             cycleCount: 0,
         }
         this.campgroundState = new Map()
-        for (const cg of campgrounds) {
-            this.campgroundState.set(cg.id, {
-                id: cg.id,
-                name: cg.name,
-                park: cg.park || '',
-                meta: {
-                    valleyDriveMinutes: cg.valleyDriveMinutes ?? null,
-                    elevationFt: cg.elevationFt ?? null,
-                    season: cg.season ?? null,
-                    totalSites: cg.totalSites ?? null,
-                    accessType: cg.accessType ?? null,
-                },
-                lastPolledAt: null,
-                status: 'pending',
-                availableByDate: {},
-                availableSites: [],
-                error: null,
-            })
+        this.__refreshCampgroundsFromDb()
+    }
+
+    /** Load the campground list from the DB and rebuild the in-memory state map,
+     *  preserving any prior runtime-only fields (lastPolledAt, status, etc.). */
+    __refreshCampgroundsFromDb() {
+        this.campgrounds = this.repos.campgrounds.all()
+        for (const cg of this.campgrounds) {
+            if (!this.campgroundState.has(cg.id)) {
+                this.campgroundState.set(cg.id, {
+                    lastPolledAt: null,
+                    status: 'pending',
+                    availableByDate: {},
+                    availableSites: [],
+                    error: null,
+                })
+            }
+        }
+        // Prune state entries for campgrounds no longer in the DB.
+        const ids = new Set(this.campgrounds.map(c => c.id))
+        for (const id of [...this.campgroundState.keys()]) {
+            if (!ids.has(id)) this.campgroundState.delete(id)
         }
     }
 
@@ -72,20 +77,29 @@ class Checker {
             return { ran: false, reason: 'already_running' }
         }
         this.cycleState.currentlyRunning = true
-        this.cycleState.lastStartedAt = new Date().toISOString()
+        const startedAtIso = new Date().toISOString()
+        this.cycleState.lastStartedAt = startedAtIso
+        const cycleId = this.repos.cycles.start(startedAtIso)
+        let polledCount = 0
+        const startMs = Date.now()
         try {
+            this.__refreshCampgroundsFromDb()  // pick up enable/disable changes between cycles
             for (const campground of this.campgrounds) {
-                if (!this.isEnabled(campground.id)) continue
+                if (!campground.enabled) continue
                 await this.__sleep(INTER_CAMPGROUND_SLEEP_MS)
-                await this.checkCampground(campground)
+                await this.checkCampground(campground, cycleId)
+                polledCount += 1
             }
         } finally {
-            this.cycleState.lastFinishedAt = new Date().toISOString()
+            const finishedAtIso = new Date().toISOString()
+            const duration = Date.now() - startMs
+            this.repos.cycles.finish(cycleId, finishedAtIso, duration, polledCount)
+            this.cycleState.lastFinishedAt = finishedAtIso
             this.cycleState.currentlyRunning = false
             this.cycleState.cycleCount += 1
         }
-        logger.info("Done!")
-        return { ran: true }
+        logger.info(`Done! (cycle ${cycleId}, polled ${polledCount})`)
+        return { ran: true, cycleId, polledCount }
     }
 
     getBackoffMs() {
@@ -93,31 +107,45 @@ class Checker {
     }
 
     isEnabled(id) {
-        return !this.disabledIds.has(Number(id))
+        const row = this.repos.campgrounds.byId(id)
+        return row ? row.enabled : false
     }
 
     setEnabled(id, enabled) {
-        const numId = Number(id)
-        if (enabled) this.disabledIds.delete(numId)
-        else this.disabledIds.add(numId)
-        return this.isEnabled(numId)
-    }
-
-    getDisabledIds() {
-        return [...this.disabledIds]
+        this.repos.campgrounds.setEnabled(id, enabled)
+        this.__refreshCampgroundsFromDb()
+        return this.isEnabled(id)
     }
 
     getStatus() {
+        this.__refreshCampgroundsFromDb()
         return {
             targetDates: this.targetDates,
             monthStarts: this.monthStarts,
             backoffMs: this.backoffMs,
             lastErrorReason: this.lastErrorReason,
             cycle: { ...this.cycleState },
-            campgrounds: this.campgrounds.map(cg => ({
-                ...this.campgroundState.get(cg.id),
-                enabled: this.isEnabled(cg.id),
-            })),
+            campgrounds: this.campgrounds.map(cg => {
+                const s = this.campgroundState.get(cg.id) || {}
+                return {
+                    id: cg.id,
+                    name: cg.name,
+                    park: cg.park,
+                    enabled: cg.enabled,
+                    meta: {
+                        valleyDriveMinutes: cg.valleyDriveMinutes ?? null,
+                        elevationFt: cg.elevationFt ?? null,
+                        season: cg.season ?? null,
+                        totalSites: cg.totalSites ?? null,
+                        accessType: cg.accessType ?? null,
+                    },
+                    lastPolledAt: s.lastPolledAt ?? null,
+                    status: s.status ?? 'pending',
+                    availableByDate: s.availableByDate ?? {},
+                    availableSites: s.availableSites ?? [],
+                    error: s.error ?? null,
+                }
+            }),
         }
     }
 
@@ -125,11 +153,6 @@ class Checker {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    /**
-     * Merge the campsites payload from one month into the running combined
-     * payload. Same campsite_id key across months yields one entry whose
-     * `availabilities` map is the union of both months.
-     */
     __mergeCampsites(combined, monthCampsites) {
         for (const [key, siteData] of Object.entries(monthCampsites || {})) {
             if (combined[key]) {
@@ -143,11 +166,6 @@ class Checker {
         }
     }
 
-    /**
-     * For each site in the (possibly multi-month-merged) API response, return
-     * the set of target dates on which it is available, plus static site
-     * detail (loop, campsite_type, max_num_people).
-     */
     __getSiteAvailabilities = (json) => {
         const sites = json.campsites;
         return _.map(sites, (siteData) => {
@@ -166,34 +184,27 @@ class Checker {
         })
     }
 
-    /**
-     * Pure formatter: takes a campground + a list of {site, availableDates}
-     * records and produces a Discord-friendly message with booking links,
-     * grouped by date so the reader can see which night opens up.
-     */
-    formatAvailabilityMessage(campground, availableSites) {
-        const header = `${campground.toString()} ${availableSites.length} site(s) available`
+    formatNewlyOpenedMessage(campground, newlyOpened) {
+        const header = `${campground.toString()} ${newlyOpened.length} new site(s) opened`
         const bookingLink = `Book: ${campground.getBookingUrl()}`
 
         const byDate = new Map()
-        for (const site of availableSites) {
-            for (const date of site.availableDates) {
-                if (!byDate.has(date)) byDate.set(date, [])
-                byDate.get(date).push(site)
-            }
+        for (const n of newlyOpened) {
+            if (!byDate.has(n.targetDate)) byDate.set(n.targetDate, [])
+            byDate.get(n.targetDate).push(n)
         }
 
         const sections = [...byDate.entries()]
             .sort(([a], [b]) => a.localeCompare(b))
-            .map(([date, sites]) => {
+            .map(([date, items]) => {
                 const datePart = date.slice(0, 10)
-                const lines = [`${weekdayLabel(date)} ${datePart} (${sites.length}):`]
-                for (const s of sites) {
-                    const url = Campground.getCampsiteUrl(s.campsiteId)
-                    const detail = [s.loop, s.campsiteType, s.maxPeople ? `max ${s.maxPeople}` : null]
+                const lines = [`${weekdayLabel(date)} ${datePart} (${items.length}):`]
+                for (const n of items) {
+                    const url = Campground.getCampsiteUrl(n.campsiteId)
+                    const detail = [n.loop, n.campsiteType, n.maxPeople ? `max ${n.maxPeople}` : null]
                         .filter(Boolean).join(', ')
                     const detailPart = detail ? ` (${detail})` : ''
-                    lines.push(`- Site ${s.siteNO}${detailPart}: ${url}`)
+                    lines.push(`- Site ${n.siteNo || n.campsiteId}${detailPart}: ${url}`)
                 }
                 return lines.join('\n')
             })
@@ -201,12 +212,34 @@ class Checker {
         return [header, bookingLink, '', ...sections].join('\n')
     }
 
-    report = (campground, res, options = { excludedSites: [] }) => {
+    report = (campground, res, cycleId, options = { excludedSites: [] }) => {
         const allSites = this.__getSiteAvailabilities(res.data)
         const excludedSites = options.excludedSites
+
+        // Build observation list spanning every (site, date) pair we saw — needed
+        // so the dedup repo can detect both opened AND closed transitions.
+        const observations = []
+        for (const s of allSites) {
+            if (_.includes(excludedSites, s.siteNO)) continue
+            for (const date of this.targetDates) {
+                observations.push({
+                    campgroundId: campground.id,
+                    campsiteId: s.campsiteId,
+                    siteNo: s.siteNO,
+                    targetDate: date,
+                    isOpen: s.availableDates.includes(date),
+                    loop: s.loop,
+                    campsiteType: s.campsiteType,
+                    maxPeople: s.maxPeople,
+                })
+            }
+        }
+        const newlyOpened = this.repos.availability.applyObservations(observations)
+
+        // In-memory "currently open" state for the dashboard.
         const availableSites = allSites
-            .filter((s) => s.availableDates.length > 0)
-            .filter((s) => !_.includes(excludedSites, s.siteNO))
+            .filter(s => s.availableDates.length > 0)
+            .filter(s => !_.includes(excludedSites, s.siteNO))
 
         const availableByDate = {}
         for (const date of this.targetDates) {
@@ -229,11 +262,20 @@ class Checker {
 
         if (availableSites.length > 0) {
             state.status = 'available'
-            const message = this.formatAvailabilityMessage(campground, state.availableSites)
-            logger.info(message)
-            this.notifier.notify(message)
         } else {
             state.status = 'all_reserved'
+        }
+
+        this.repos.cycles.recordResult(cycleId, campground.id, state.status, availableSites.length, null, state.lastPolledAt)
+
+        // Only notify on FRESH transitions to open. Dedup handled in DB.
+        if (newlyOpened.length > 0) {
+            const message = this.formatNewlyOpenedMessage(campground, newlyOpened)
+            logger.info(message)
+            this.notifier.notify(message)
+        } else if (availableSites.length > 0) {
+            logger.info(`${campground.toString()} ${availableSites.length} site(s) still open (no new openings)`)
+        } else {
             logger.info(`${campground.toString()} ALL RESERVED across ${this.targetDates.length} date(s)`)
         }
     }
@@ -243,7 +285,7 @@ class Checker {
         return new Campground(name, id, park)
     }
 
-    __handleError(err, campground) {
+    __handleError(err, campground, cycleId) {
         const status = err.response?.status
         const retryAfterRaw = err.response?.headers?.['retry-after']
 
@@ -277,6 +319,9 @@ class Checker {
             state.status = 'error'
             state.error = this.lastErrorReason
         }
+        if (cycleId != null) {
+            this.repos.cycles.recordResult(cycleId, campground.id, 'error', 0, this.lastErrorReason, new Date().toISOString())
+        }
 
         logger.error(
             `Error checking ${campground.toString()}: ${this.lastErrorReason}. ` +
@@ -292,7 +337,7 @@ class Checker {
         this.lastErrorReason = null
     }
 
-    async checkCampground(campgroundJson) {
+    async checkCampground(campgroundJson, cycleId) {
         const campground = this.__createCampground(campgroundJson)
         const combined = {}
 
@@ -307,10 +352,10 @@ class Checker {
                 })
                 this.__mergeCampsites(combined, res.data?.campsites)
             }
-            this.report(campground, { data: { campsites: combined } }, { excludedSites: this.excludedSites })
+            this.report(campground, { data: { campsites: combined } }, cycleId, { excludedSites: this.excludedSites })
             this.__resetBackoff()
         } catch (err) {
-            this.__handleError(err, campground)
+            this.__handleError(err, campground, cycleId)
         }
     }
 }
