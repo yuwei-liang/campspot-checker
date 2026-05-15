@@ -37,6 +37,21 @@ When a campsite is available for `TARGET_DATE`, the report is posted to `WEBHOOK
 docker compose up --build
 ```
 
+## Deploy to NAS
+
+After local changes:
+
+```
+./deploy.sh
+```
+
+Builds an amd64 image, ships it + `.env` + `docker-compose-nas.yml` over SSH to `blackwhale:/volume1/docker/campspot-checker/`, and force-recreates the container. Image transfer is ~30s over LAN. Live URL: https://campspot.yuweiliang.com.
+
+Prereqs (one-time, already set up on this Mac + NAS):
+- SSH key auth to `blackwhale` host alias
+- Passwordless sudo for docker on the NAS (`/etc/sudoers.d/docker-fredcorn`)
+- DSM SFTP service enabled (for `scp -O`)
+
 ## Public access via Cloudflare Tunnel
 
 Expose the dashboard at `campspot.yuweiliang.com` without opening any inbound port on the router. A `cloudflared` sidecar runs next to the app and makes outbound-only connections to Cloudflare's edge. Cloudflare Access (free, up to 50 users) gates the subdomain behind an email allowlist with one-time PIN auth.

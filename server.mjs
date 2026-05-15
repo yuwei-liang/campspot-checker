@@ -134,6 +134,7 @@ app.get('/api/status', (req, res) => {
         ...checker.getStatus(),
         pollIntervalMs: config.pollIntervalMs,
         serverTime: new Date().toISOString(),
+        discordInviteUrl: process.env.DISCORD_INVITE_URL || null,
     });
 });
 app.get('/api/history', (req, res) => {

@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  campspot-checker:
+    image: fredcorn/campspot-checker:amd64-latest
+    container_name: campspot-checker
+    restart: unless-stopped
+    ports:
+      - 8787:8787
+    env_file:
+      - .env
+    environment:
+      - PORT=8787
