@@ -1,6 +1,6 @@
-// server
+// logger
 import winston from 'winston'
-const { printf, combine, timestamp, json } = winston.format
+const { printf, combine, timestamp } = winston.format
 
 const myFormat = printf((info) => {
     return `${info.timestamp} ${info.level} ${info.message}`;
@@ -14,19 +14,11 @@ const logger = winston.createLogger({
     ),
     defaultMeta: { service: 'user-service' },
     transports: [
-        //
-        // - Write all logs with importance level of `error` or less to `error.log`
-        // - Write all logs with importance level of `info` or less to `combined.log`
-        //
         new winston.transports.File({ filename: 'log/error.log', level: 'error' }),
         new winston.transports.File({ filename: 'log/combined.log' }),
     ],
 });
 
-//
-// If we're not in production then log to the `console` with the format:
-// `${info.level}: ${info.message} JSON.stringify({ ...rest }) `
-//
 if (process.env.NODE_ENV !== 'production') {
     logger.add(new winston.transports.Console());
 }
@@ -36,60 +28,75 @@ global.logger = logger;
 import * as dotenv from 'dotenv'
 dotenv.config()
 
-// app
-import campgrounds from './campgrounds.json' assert { type: 'json' }
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const campgrounds = require('./campgrounds.json')
+
 import Checker from './availability-checker/Checker.mjs'
-import express from 'express'
 import Notifier from './availability-checker/Notifier.mjs'
+import { loadConfig } from './availability-checker/configLoader.mjs'
+import express from 'express'
 
 const PORT = 8080
 const HOST = '0.0.0.0'
-const DISCORD_WEBHOOK = process.env.WEBHOOK_URL
-const TARGET_DATE = "2023-05-27T00:00:00Z"
 
-// To tell discord this server is still running
-const liveCheck = (interval = 30) => {
-    const notifier = new Notifier(DISCORD_WEBHOOK)
+let config
+try {
+    config = loadConfig()
+} catch (err) {
+    logger.error(err.message)
+    process.exit(1)
+}
+
+const liveCheck = (notifier, intervalMinutes = 30) => {
     setInterval(() => {
-        var date = new Date()
-        const minutes = date.getMinutes();
-        if (minutes % interval == 0) {
+        const minutes = new Date().getMinutes();
+        if (minutes % intervalMinutes === 0) {
             notifier.heartbeat()
         }
-    }, 30000)
+    }, 60 * 1000)
 }
 
-const executeCheck = () => {
-    logger.info("Executing ...")
-    const checker = new Checker(
-        campgrounds,
-        TARGET_DATE,
-        DISCORD_WEBHOOK
-    );
-    checker.executeCheck()
+const jitter = () => Math.floor(Math.random() * 10_000)
+
+const scheduleNextCheck = (checker, baseIntervalMs) => {
+    const backoff = checker.getBackoffMs()
+    const delay = backoff > 0
+        ? backoff + jitter()
+        : baseIntervalMs + jitter()
+
+    if (backoff > 0) {
+        logger.info(`Backing off for ${delay}ms before next cycle`)
+    }
+
+    setTimeout(async () => {
+        logger.info("Executing ...")
+        try {
+            await checker.executeCheck()
+        } catch (err) {
+            logger.error(`executeCheck threw: ${err.message}`)
+        }
+        scheduleNextCheck(checker, baseIntervalMs)
+    }, delay)
 }
 
-const printStartMsg = () => {
-    logger.info("Discord webhook url:")
-    logger.info(process.env.WEBHOOK_URL)
-}
-
-// App
 const app = express()
 app.get('/', (req, res) => {
     res.send('Hello World');
 });
 
 app.listen(PORT, HOST, () => {
-    printStartMsg()
     logger.info(`Running on http://${HOST}:${PORT}`);
+    logger.info(`MONTH_START=${config.monthStart}, TARGET_DATE=${config.targetDate}, POLL_INTERVAL_MS=${config.pollIntervalMs}`)
 
-    // first run
-    executeCheck()
+    const checker = new Checker(
+        campgrounds,
+        config.targetDate,
+        config.webhookUrl,
+        config.monthStart,
+    );
+    const heartbeatNotifier = new Notifier(config.webhookUrl)
 
-    // send heatbeats
-    liveCheck()
-
-    // repeated run
-    setInterval(executeCheck, 30000)
+    scheduleNextCheck(checker, config.pollIntervalMs)
+    liveCheck(heartbeatNotifier)
 });

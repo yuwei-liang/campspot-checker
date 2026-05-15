@@ -1,13 +1,35 @@
-# Before run
-copy .env.example as .env and set the discord webhook url so that you can receive notifications
+# campspot-checker
 
-# RUN
+Polls recreation.gov for campsite availability and pings a Discord channel when a site opens up for your target date.
+
+## Setup
+
+1. `cp .env.example .env` and fill in:
+   - `WEBHOOK_URL` — your Discord webhook URL
+   - `MONTH_START` — first of the month you're monitoring, e.g. `2026-06-01T00:00:00.000Z` (matches what recreation.gov's API expects)
+   - `TARGET_DATE` — specific date inside that month to alert on, e.g. `2026-06-27T00:00:00Z`
+   - `POLL_INTERVAL_MS` — optional, defaults to `90000` (90s). Don't drop below `1000`.
+2. `npm install`
+3. `npm start`
+
+## Configure which campgrounds to monitor
+
+Edit `campgrounds.json`. Each entry is `{ "name": "...", "id": <recreation.gov id>, "park": "..." }`. The `id` is the number in the campground URL on recreation.gov, e.g. `https://www.recreation.gov/camping/campgrounds/232447` → id `232447`.
+
+## Run tests
+
 ```
-npm i
-npx nodemon check-serrano-avail.js
+npm test
 ```
 
-# Description
-Run a availability check on this [campground](https://www.recreation.gov/camping/campgrounds/232250).
-Currently it checks only 11/5 for any available spots.
-It would print "FOUND AVAILABLE SITES~" when any is found.
+## How it works
+
+`server.mjs` reads `.env` and `campgrounds.json`, builds a `Checker`, and polls each campground in sequence with a 2s gap between calls. After every cycle, it waits `POLL_INTERVAL_MS + jitter` before the next cycle. On HTTP 429 / 5xx / network errors, it backs off exponentially up to 10 minutes (and honors `Retry-After` when present) so we don't get IP-banned by recreation.gov.
+
+When a campsite is available for `TARGET_DATE`, the report is posted to `WEBHOOK_URL`. Heartbeats are posted every 30 minutes so you know the monitor is alive.
+
+## Docker
+
+```
+docker compose up --build
+```

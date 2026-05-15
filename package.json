@@ -4,7 +4,7 @@
   "description": "",
   "main": "server.mjs",
   "scripts": {
-    "test": "jest",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "start": "nodemon server.mjs",
     "start-hot-reload": "nodemon --exec \"sh\" ./start-server-dev.sh"
   },

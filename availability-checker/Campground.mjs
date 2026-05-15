@@ -1,5 +1,3 @@
-import Checker from "./Checker.mjs"
-
 class Campground {
     constructor(name, id, park = "") {
         this.name = name
@@ -7,10 +5,14 @@ class Campground {
         this.park = park
     }
 
-    // @TODO: supports month slection
-    getAvailabilityUrl() {
-        const url = `https://www.recreation.gov/api/camps/availability/campground/${this.id}/month?start_date=2023-05-01T00%3A00%3A00.000Z`
-        return url;
+    getAvailabilityUrl(monthStart) {
+        if (!monthStart) {
+            throw new Error(
+                `Campground.getAvailabilityUrl: monthStart is required (got ${monthStart}). ` +
+                `Set MONTH_START in .env to an ISO 8601 first-of-month date, e.g. 2026-06-01T00:00:00.000Z`
+            )
+        }
+        return `https://www.recreation.gov/api/camps/availability/campground/${this.id}/month?start_date=${encodeURIComponent(monthStart)}`
     }
 
     toString() {
@@ -23,7 +25,7 @@ class Campground {
             desc += `[${this.name}]`
         }
 
-        desc += `[${this.getAvailabilityUrl()}]`
+        desc += `[id:${this.id}]`
         return desc
     }
 }
