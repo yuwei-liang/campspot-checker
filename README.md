@@ -36,3 +36,38 @@ When a campsite is available for `TARGET_DATE`, the report is posted to `WEBHOOK
 ```
 docker compose up --build
 ```
+
+## Public access via Cloudflare Tunnel
+
+Expose the dashboard at `campspot.yuweiliang.com` without opening any inbound port on the router. A `cloudflared` sidecar runs next to the app and makes outbound-only connections to Cloudflare's edge.
+
+### 1. Create the tunnel (Cloudflare dashboard)
+
+1. Go to https://one.dash.cloudflare.com → **Networks → Tunnels → Create a tunnel**.
+2. Connector: **Cloudflared**. Name: `campspot`. Save.
+3. Cloudflare shows a one-time install command containing a token like `eyJhIjoi...`. Copy just the token string.
+4. Under **Public Hostnames** for this tunnel, add:
+   - Subdomain: `campspot`, Domain: `yuweiliang.com`
+   - Service: `HTTP`, URL: `host.docker.internal:49160`
+
+### 2. Lock it down (Cloudflare Access)
+
+1. Same dashboard → **Access → Applications → Add an application → Self-hosted**.
+2. Application domain: `campspot.yuweiliang.com`.
+3. Add a policy: **Action = Allow**, **Include = Emails**, list your + friends' emails.
+4. Identity provider: **One-time PIN** is enabled by default — friends auth by entering their email and a 6-digit code sent to it. Session lasts 24h.
+
+### 3. Run the sidecar on the NAS
+
+On your Mac:
+```
+cp cloudflared/.env.example cloudflared/.env
+# paste the token from step 1.3 into TUNNEL_TOKEN
+```
+
+In Synology Container Manager:
+1. **Project → Create**. Path: `/volume1/docker/campspot-cloudflared`. Source: upload `cloudflared/docker-compose.yml` and `cloudflared/.env`.
+2. Build and start. Logs should show `Registered tunnel connection`.
+
+Verify with `curl -I https://campspot.yuweiliang.com` from any machine — you should get a Cloudflare Access login redirect.
+
