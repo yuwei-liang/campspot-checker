@@ -15,5 +15,5 @@ RUN npm install
 COPY . .
 RUN chmod +x ./server.mjs
 
-EXPOSE 8080
+EXPOSE 8787
 CMD [ "npm", "run", "start" ]

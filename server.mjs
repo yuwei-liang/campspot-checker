@@ -38,7 +38,7 @@ import { loadConfig } from './availability-checker/configLoader.mjs'
 import { STATUS_PAGE_HTML } from './availability-checker/statusPage.mjs'
 import express from 'express'
 
-const PORT = 8080
+const PORT = Number.parseInt(process.env.PORT || '8787', 10)
 const HOST = '0.0.0.0'
 
 let config

@@ -11,6 +11,7 @@ Polls recreation.gov for campsite availability and pings a Discord channel when 
    - `POLL_INTERVAL_MS` — optional, defaults to `90000` (90s). Don't drop below `1000`.
 2. `npm install`
 3. `npm start`
+4. Open http://localhost:8787 for the live status page (override the port with `PORT=...` in `.env` if 8787 is taken).
 
 ## Configure which campgrounds to monitor
 

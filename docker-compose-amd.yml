@@ -7,9 +7,9 @@ services:
   build:
    context: .
   ports:
-   - 49160:8080
+   - 49160:8787
   environment:
-   - SERVER_PORT=8000
+   - PORT=8787
   volumes:
    - ./:/app
    - /app/node_modules
