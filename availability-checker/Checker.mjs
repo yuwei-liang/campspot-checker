@@ -26,7 +26,7 @@ class Checker {
     backoffMs = 0
     lastErrorReason = null
 
-    constructor(campgrounds, targetDates, discordWebhookURL, monthStarts) {
+    constructor(campgrounds, targetDates, discordWebhookURL, monthStarts, initialDisabledIds = []) {
         if (!Array.isArray(monthStarts) || monthStarts.length === 0) {
             throw new Error('Checker: monthStarts must be a non-empty array')
         }
@@ -37,6 +37,7 @@ class Checker {
         this.monthStarts = monthStarts
         this.notifier = new Notifier(discordWebhookURL)
         this.campgrounds = campgrounds
+        this.disabledIds = new Set(initialDisabledIds.map(Number))
 
         this.cycleState = {
             lastStartedAt: null,
@@ -74,6 +75,7 @@ class Checker {
         this.cycleState.lastStartedAt = new Date().toISOString()
         try {
             for (const campground of this.campgrounds) {
+                if (!this.isEnabled(campground.id)) continue
                 await this.__sleep(INTER_CAMPGROUND_SLEEP_MS)
                 await this.checkCampground(campground)
             }
@@ -90,6 +92,21 @@ class Checker {
         return this.backoffMs
     }
 
+    isEnabled(id) {
+        return !this.disabledIds.has(Number(id))
+    }
+
+    setEnabled(id, enabled) {
+        const numId = Number(id)
+        if (enabled) this.disabledIds.delete(numId)
+        else this.disabledIds.add(numId)
+        return this.isEnabled(numId)
+    }
+
+    getDisabledIds() {
+        return [...this.disabledIds]
+    }
+
     getStatus() {
         return {
             targetDates: this.targetDates,
@@ -97,7 +114,10 @@ class Checker {
             backoffMs: this.backoffMs,
             lastErrorReason: this.lastErrorReason,
             cycle: { ...this.cycleState },
-            campgrounds: this.campgrounds.map(cg => this.campgroundState.get(cg.id)),
+            campgrounds: this.campgrounds.map(cg => ({
+                ...this.campgroundState.get(cg.id),
+                enabled: this.isEnabled(cg.id),
+            })),
         }
     }
 

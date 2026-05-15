@@ -327,6 +327,52 @@ describe('Checker', () => {
         })
     })
 
+    describe('enable/disable', () => {
+        test('isEnabled defaults to true', () => {
+            const checker = new Checker([{ name: 'X', id: 1, park: 'Y' }], TARGET_DATES, WEBHOOK, [MONTH_START])
+            expect(checker.isEnabled(1)).toBe(true)
+        })
+
+        test('initialDisabledIds disables those campgrounds', () => {
+            const checker = new Checker(
+                [{ name: 'X', id: 1, park: 'Y' }, { name: 'Z', id: 2, park: 'Y' }],
+                TARGET_DATES, WEBHOOK, [MONTH_START],
+                [1],
+            )
+            expect(checker.isEnabled(1)).toBe(false)
+            expect(checker.isEnabled(2)).toBe(true)
+        })
+
+        test('setEnabled flips state and returns the new value', () => {
+            const checker = new Checker([{ name: 'X', id: 1, park: 'Y' }], TARGET_DATES, WEBHOOK, [MONTH_START])
+            expect(checker.setEnabled(1, false)).toBe(false)
+            expect(checker.isEnabled(1)).toBe(false)
+            expect(checker.setEnabled(1, true)).toBe(true)
+            expect(checker.isEnabled(1)).toBe(true)
+        })
+
+        test('getDisabledIds returns the disabled set as an array', () => {
+            const checker = new Checker(
+                [{ name: 'X', id: 1, park: 'Y' }, { name: 'Z', id: 2, park: 'Y' }],
+                TARGET_DATES, WEBHOOK, [MONTH_START],
+            )
+            checker.setEnabled(1, false)
+            checker.setEnabled(2, false)
+            expect(new Set(checker.getDisabledIds())).toEqual(new Set([1, 2]))
+        })
+
+        test('getStatus marks disabled campgrounds with enabled:false', () => {
+            const checker = new Checker(
+                [{ name: 'X', id: 1, park: 'Y' }, { name: 'Z', id: 2, park: 'Y' }],
+                TARGET_DATES, WEBHOOK, [MONTH_START],
+                [1],
+            )
+            const status = checker.getStatus()
+            expect(status.campgrounds.find(c => c.id === 1).enabled).toBe(false)
+            expect(status.campgrounds.find(c => c.id === 2).enabled).toBe(true)
+        })
+    })
+
     test('__resetBackoff zeroes out state', () => {
         const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         checker.backoffMs = 5000

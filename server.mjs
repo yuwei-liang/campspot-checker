@@ -35,6 +35,7 @@ const campgrounds = require('./campgrounds.json')
 import Checker from './availability-checker/Checker.mjs'
 import Notifier from './availability-checker/Notifier.mjs'
 import { loadConfig } from './availability-checker/configLoader.mjs'
+import { loadRuntimeState, saveRuntimeState } from './availability-checker/runtimeState.mjs'
 import { STATUS_PAGE_HTML } from './availability-checker/statusPage.mjs'
 import express from 'express'
 
@@ -81,15 +82,18 @@ const scheduleNextCheck = (checker, baseIntervalMs) => {
     }, delay)
 }
 
+const initialRuntimeState = loadRuntimeState()
 const checker = new Checker(
     campgrounds,
     config.targetDates,
     config.webhookUrl,
     config.monthStarts,
+    initialRuntimeState.disabledIds,
 );
 const heartbeatNotifier = new Notifier(config.webhookUrl)
 
 const app = express()
+app.use(express.json())
 app.get('/', (req, res) => {
     res.type('html').send(STATUS_PAGE_HTML);
 });
@@ -107,6 +111,27 @@ app.post('/api/poll', (req, res) => {
     logger.info('Manual poll triggered via /api/poll');
     checker.executeCheck().catch(err => logger.error(`manual poll: ${err.message}`));
     res.status(202).json({ ok: true, startedAt: new Date().toISOString() });
+});
+app.post('/api/campgrounds/:id/enabled', (req, res) => {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) {
+        return res.status(400).json({ ok: false, reason: 'id must be a number' })
+    }
+    const { enabled } = req.body || {}
+    if (typeof enabled !== 'boolean') {
+        return res.status(400).json({ ok: false, reason: 'body.enabled must be a boolean' })
+    }
+    if (!checker.campgrounds.find(c => c.id === id)) {
+        return res.status(404).json({ ok: false, reason: 'unknown campground id' })
+    }
+    const newState = checker.setEnabled(id, enabled)
+    try {
+        saveRuntimeState({ disabledIds: checker.getDisabledIds() })
+    } catch (err) {
+        logger.error(`failed to persist runtime state: ${err.message}`)
+    }
+    logger.info(`Campground ${id} ${newState ? 'enabled' : 'disabled'}`)
+    res.json({ ok: true, id, enabled: newState })
 });
 
 app.listen(PORT, HOST, async () => {

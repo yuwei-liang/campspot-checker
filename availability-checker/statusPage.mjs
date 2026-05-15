@@ -57,6 +57,9 @@ export const STATUS_PAGE_HTML = `<!doctype html>
   .site-detail { font-size: 11px; opacity: 0.65; margin-left: 6px; }
   .site-dates { display: inline-block; margin-left: 6px; }
   .more { font-size: 11px; opacity: 0.6; padding-top: 4px; }
+  tr.disabled { opacity: 0.4; }
+  tr.disabled td { background: repeating-linear-gradient(45deg, transparent, transparent 6px, #0000000a 6px, #0000000a 12px); }
+  .toggle { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -69,6 +72,7 @@ export const STATUS_PAGE_HTML = `<!doctype html>
 <table>
   <thead>
     <tr>
+      <th>On</th>
       <th class="sortable" data-sort="name">Campground</th>
       <th class="sortable" data-sort="drive">Drive to valley</th>
       <th class="sortable" data-sort="elev">Elev</th>
@@ -235,7 +239,10 @@ const render = () => {
     const accessPill = m.accessType
       ? \` <span class="pill">\${escape(m.accessType)}</span>\`
       : ''
-    return \`<tr>
+    const rowClass = cg.enabled === false ? 'disabled' : ''
+    const checked = cg.enabled !== false ? 'checked' : ''
+    return \`<tr class="\${rowClass}">
+      <td><input type="checkbox" class="toggle" data-id="\${cg.id}" \${checked} title="Enable / disable polling for this campground"></td>
       <td>\${park}<a href="\${bookingUrl}" target="_blank">\${escape(cg.name)}</a>\${accessPill}
           <div class="meta-sub">id:\${cg.id}</div></td>
       <td class="num">\${fmtDrive(m.valleyDriveMinutes)}</td>
@@ -260,6 +267,34 @@ document.querySelectorAll('th.sortable').forEach(th => {
     }
     render()
   })
+})
+
+// Delegated toggle handler (rows re-render every refresh).
+document.getElementById('rows').addEventListener('change', async (e) => {
+  if (!e.target.classList.contains('toggle')) return
+  const id = Number(e.target.dataset.id)
+  const enabled = e.target.checked
+  e.target.disabled = true
+  try {
+    const res = await fetch(\`/api/campgrounds/\${id}/enabled\`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    // Optimistically reflect in cached state, then refresh
+    if (lastData) {
+      const cg = lastData.campgrounds.find(c => c.id === id)
+      if (cg) cg.enabled = enabled
+    }
+    render()
+    setTimeout(refresh, 500)
+  } catch (err) {
+    setFlash('toggle failed: ' + err.message, 'err')
+    e.target.checked = !enabled // revert visually
+  } finally {
+    setTimeout(() => { e.target.disabled = false }, 300)
+  }
 })
 
 const refresh = async () => {
