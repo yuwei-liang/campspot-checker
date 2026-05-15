@@ -197,6 +197,8 @@ describe('Checker', () => {
                 season: 'year-round',
                 totalSites: 238,
                 accessType: 'drive-in',
+                lat: null,
+                lon: null,
             })
         })
 

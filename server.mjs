@@ -40,6 +40,8 @@ import { openDatabase, DEFAULT_DB_PATH } from './availability-checker/db/db.mjs'
 import { createCampgroundsRepo } from './availability-checker/db/campgroundsRepo.mjs'
 import { createCyclesRepo } from './availability-checker/db/cyclesRepo.mjs'
 import { createAvailabilityRepo } from './availability-checker/db/availabilityRepo.mjs'
+import { createWeatherRepo } from './availability-checker/db/weatherRepo.mjs'
+import { scheduleWeatherRefresh } from './availability-checker/weatherService.mjs'
 import { STATUS_PAGE_HTML } from './availability-checker/statusPage.mjs'
 import express from 'express'
 
@@ -61,6 +63,7 @@ const repos = {
     campgrounds: createCampgroundsRepo(db),
     cycles: createCyclesRepo(db),
     availability: createAvailabilityRepo(db),
+    weather: createWeatherRepo(db),
 }
 
 // Seed campgrounds from campgrounds.json. upsert is INSERT-or-UPDATE on id,
@@ -172,4 +175,10 @@ app.listen(PORT, HOST, async () => {
     checker.executeCheck().catch(err => logger.error(`initial executeCheck: ${err.message}`))
     scheduleNextCheck(checker, config.pollIntervalMs)
     liveCheck(heartbeatNotifier)
+    scheduleWeatherRefresh({
+        repos,
+        getCampgrounds: () => repos.campgrounds.all(),
+        getTargetDates: () => config.targetDates,
+        log: logger,
+    })
 });

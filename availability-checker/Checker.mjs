@@ -127,6 +127,22 @@ class Checker {
             cycle: { ...this.cycleState },
             campgrounds: this.campgrounds.map(cg => {
                 const s = this.campgroundState.get(cg.id) || {}
+                const weatherByDate = {}
+                if (this.repos.weather && cg.lat != null && cg.lon != null) {
+                    for (const date of this.targetDates) {
+                        const w = this.repos.weather.get(cg.lat, cg.lon, date)
+                        if (w) {
+                            weatherByDate[date] = {
+                                tminF: w.tminF,
+                                tmaxF: w.tmaxF,
+                                precipMm: w.precipMm,
+                                snowfallCm: w.snowfallCm,
+                                weatherCode: w.weatherCode,
+                                sourceDate: w.sourceDate,
+                            }
+                        }
+                    }
+                }
                 return {
                     id: cg.id,
                     name: cg.name,
@@ -138,11 +154,14 @@ class Checker {
                         season: cg.season ?? null,
                         totalSites: cg.totalSites ?? null,
                         accessType: cg.accessType ?? null,
+                        lat: cg.lat ?? null,
+                        lon: cg.lon ?? null,
                     },
                     lastPolledAt: s.lastPolledAt ?? null,
                     status: s.status ?? 'pending',
                     availableByDate: s.availableByDate ?? {},
                     availableSites: s.availableSites ?? [],
+                    weatherByDate,
                     error: s.error ?? null,
                 }
             }),

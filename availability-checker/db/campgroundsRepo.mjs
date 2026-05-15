@@ -16,13 +16,15 @@ const fromRow = (row) => row && ({
     accessType: row.access_type,
     enabled: row.enabled === 1,
     sortOrder: row.sort_order,
+    lat: row.lat,
+    lon: row.lon,
 })
 
 export const createCampgroundsRepo = (db) => {
     const upsertCampground = db.prepare(`
         INSERT INTO campgrounds (
-            id, name, park, valley_drive_minutes, elevation_ft, season, total_sites, access_type, sort_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, name, park, valley_drive_minutes, elevation_ft, season, total_sites, access_type, sort_order, lat, lon
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             park = excluded.park,
@@ -31,7 +33,9 @@ export const createCampgroundsRepo = (db) => {
             season = excluded.season,
             total_sites = excluded.total_sites,
             access_type = excluded.access_type,
-            sort_order = excluded.sort_order
+            sort_order = excluded.sort_order,
+            lat = excluded.lat,
+            lon = excluded.lon
     `)
 
     const setEnabled = db.prepare(`UPDATE campgrounds SET enabled = ? WHERE id = ?`)
@@ -71,6 +75,8 @@ export const createCampgroundsRepo = (db) => {
                 cg.totalSites ?? null,
                 cg.accessType ?? null,
                 sortOrder,
+                cg.lat ?? null,
+                cg.lon ?? null,
             )
         },
         /**

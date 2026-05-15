@@ -7,7 +7,9 @@
         "elevationFt": 4000,
         "season": "Apr-Oct",
         "totalSites": 60,
-        "accessType": "drive-in"
+        "accessType": "drive-in",
+        "lat": 37.7406,
+        "lon": -119.5650
     },
     {
         "park": "Yosemite",
@@ -17,7 +19,9 @@
         "elevationFt": 4000,
         "season": "Apr-Oct",
         "totalSites": 81,
-        "accessType": "drive-in"
+        "accessType": "drive-in",
+        "lat": 37.7437,
+        "lon": -119.5648
     },
     {
         "park": "Yosemite",
@@ -27,7 +31,9 @@
         "elevationFt": 4000,
         "season": "year-round",
         "totalSites": 93,
-        "accessType": "drive-in"
+        "accessType": "drive-in",
+        "lat": 37.5374,
+        "lon": -119.6566
     },
     {
         "park": "Yosemite",
@@ -37,7 +43,9 @@
         "elevationFt": 4000,
         "season": "year-round",
         "totalSites": 238,
-        "accessType": "drive-in"
+        "accessType": "drive-in",
+        "lat": 37.7393,
+        "lon": -119.5697
     },
     {
         "park": "Sequoia",
@@ -47,6 +55,8 @@
         "elevationFt": 6650,
         "season": "May-Oct",
         "totalSites": 21,
-        "accessType": "drive-in"
+        "accessType": "drive-in",
+        "lat": 36.4633,
+        "lon": -118.6664
     }
 ]

@@ -2,109 +2,251 @@ export const STATUS_PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
 <title>campspot-checker</title>
 <style>
-  body { font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
-         margin: 24px; max-width: 1180px;
-         color: #111; background: #fafafa; }
-  @media (prefers-color-scheme: dark) {
-    body { color: #ddd; background: #111; }
-    th { background: #222 !important; }
-    tr:hover { background: #1c1c1c !important; }
-    a { color: #6cf; }
+  :root {
+    --bg: #fafafa;
+    --fg: #111;
+    --muted: #666;
+    --line: #ccc4;
+    --card-bg: #fff;
+    --card-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    --accent: #06c;
+    --accent-bg: #06c1c;
+    --green: #1a7f1a;
+    --green-bg: #1a7f1a14;
+    --red: #c33;
+    --orange: #c66;
+    --cold: #2f70b0;
+    --pill-bg: #00000010;
+    --pill-warn-bg: #c3331a;
   }
-  h1 { font-size: 18px; margin: 0 0 8px; }
-  .meta { margin-bottom: 16px; font-size: 12px; opacity: 0.8; }
-  .meta span { margin-right: 16px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #ccc3; vertical-align: top; }
-  th { background: #eee; font-weight: 600; }
-  tr:hover { background: #0001; }
-  th.sortable { cursor: pointer; user-select: none; }
-  th.sortable:hover { text-decoration: underline; }
-  th .arrow { font-size: 10px; opacity: 0.6; margin-left: 4px; }
-  .status { font-weight: 600; }
-  .status.available { color: #1a7f1a; }
-  .status.all_reserved { color: #888; }
-  .status.error { color: #c33; }
-  .status.pending { color: #999; }
-  .sites { font-size: 12px; line-height: 1.4; }
-  .meta-sub { font-size: 11px; opacity: 0.6; margin-top: 2px; }
-  .err { color: #c33; font-size: 12px; }
-  .footer { margin-top: 16px; font-size: 12px; opacity: 0.6; }
-  a { color: #06c; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .pill { display: inline-block; padding: 2px 6px; border-radius: 4px;
-          background: #0002; font-size: 11px; }
-  .pill.warn { background: #c3331a; color: #fff; }
-  .num { text-align: right; white-space: nowrap; }
-  .actions { margin-bottom: 12px; }
-  button { font: inherit; padding: 6px 12px; border: 1px solid #888; border-radius: 4px;
-           background: #fff; color: inherit; cursor: pointer; }
-  button:hover:not(:disabled) { background: #eee; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0d0d;
+      --fg: #ddd;
+      --muted: #888;
+      --line: #2a2a2a;
+      --card-bg: #161616;
+      --card-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      --accent: #6cf;
+      --pill-bg: #ffffff14;
+      --green-bg: #1a7f1a26;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--fg);
+    background: var(--bg);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  header.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  header.top h1 { font-size: 18px; margin: 0; flex: 0 0 auto; }
+  .meta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); flex: 1 1 100%; }
+  .meta span { white-space: nowrap; }
+  .actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+  button {
+    font: inherit;
+    padding: 8px 14px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card-bg);
+    color: inherit;
+    cursor: pointer;
+    min-height: 36px;
+  }
+  button:hover:not(:disabled) { background: var(--pill-bg); }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
-  @media (prefers-color-scheme: dark) {
-    button { background: #222; border-color: #555; }
-    button:hover:not(:disabled) { background: #2a2a2a; }
+  .flash { font-size: 12px; }
+  .flash.ok { color: var(--green); }
+  .flash.err { color: var(--red); }
+
+  .cards {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: 1fr;
+    margin-top: 12px;
   }
-  .flash { margin-left: 12px; font-size: 12px; }
-  .flash.ok { color: #1a7f1a; }
-  .flash.err { color: #c33; }
-  .date-counts { margin-bottom: 4px; }
-  .date-pill { background: #1a7f1a22; }
-  .site-row { padding: 2px 0; border-bottom: 1px dashed #ccc4; line-height: 1.3; }
-  .site-row:last-of-type { border-bottom: none; }
-  .site-detail { font-size: 11px; opacity: 0.65; margin-left: 6px; }
-  .site-dates { display: inline-block; margin-left: 6px; }
-  .more { font-size: 11px; opacity: 0.6; padding-top: 4px; }
-  .panel { margin-top: 32px; }
-  .panel h2 { font-size: 14px; margin: 0 0 8px; }
-  .event-row { padding: 4px 0; border-bottom: 1px solid #ccc3; display: grid;
-               grid-template-columns: 90px 1fr 80px 140px; gap: 8px; align-items: baseline;
-               font-size: 12px; line-height: 1.4; }
-  .event-row .ev-time { opacity: 0.6; }
-  .event-row .ev-open { color: #1a7f1a; font-weight: 600; }
-  .event-row .ev-closed { color: #888; }
-  .empty-panel { font-size: 12px; opacity: 0.5; padding: 8px 0; }
-  tr.disabled { opacity: 0.4; }
-  tr.disabled td { background: repeating-linear-gradient(45deg, transparent, transparent 6px, #0000000a 6px, #0000000a 12px); }
-  .toggle { cursor: pointer; }
+  @media (min-width: 720px) {
+    .cards { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (min-width: 1080px) {
+    .cards { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--card-shadow);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .card.disabled { opacity: 0.55; }
+  .card.disabled::after {
+    content: "disabled";
+    position: absolute;
+    /* placeholder for screen readers — visual styling below */
+  }
+  .card-header { display: flex; gap: 10px; align-items: flex-start; }
+  .toggle {
+    cursor: pointer;
+    width: 22px; height: 22px; flex: 0 0 auto;
+    margin-top: 2px;
+  }
+  .card-title { flex: 1 1 auto; min-width: 0; }
+  .park-badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--pill-bg);
+    color: var(--muted);
+    margin-right: 6px;
+    vertical-align: 2px;
+  }
+  .card-title a { color: inherit; text-decoration: none; font-weight: 600; font-size: 15px; }
+  .card-title a:hover { color: var(--accent); }
+  .card-meta {
+    font-size: 11px; color: var(--muted); margin-top: 2px;
+    display: flex; flex-wrap: wrap; gap: 4px;
+  }
+  .card-meta .sep { opacity: 0.4; }
+
+  .status-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .status { font-weight: 600; font-size: 13px; }
+  .status.available { color: var(--green); }
+  .status.all_reserved { color: var(--muted); }
+  .status.error { color: var(--red); }
+  .status.pending { color: var(--muted); }
+  .count-pill {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--green-bg);
+    color: var(--green);
+  }
+  .last-poll { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+  .date-list { list-style: none; padding: 0; margin: 4px 0 0; }
+  .date-row {
+    display: grid;
+    grid-template-columns: 70px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 0;
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .date-row:first-child { border-top: none; }
+  .date-label { color: var(--muted); }
+  .date-label.weekend { color: var(--fg); }
+  .weather { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+  .weather .temps.cold { color: var(--cold); font-weight: 600; }
+  .weather .snow { color: var(--cold); }
+  .date-count {
+    font-weight: 600;
+    color: var(--green);
+    background: var(--green-bg);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+  }
+  .date-count.zero { color: var(--muted); background: var(--pill-bg); font-weight: 400; }
+  .more-dates { padding: 6px 0; font-size: 11px; color: var(--muted); }
+  .err-msg { font-size: 12px; color: var(--red); }
+
+  .sites-link {
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+    font-size: 11px;
+  }
+  .sites-link details summary { cursor: pointer; color: var(--accent); list-style: none; padding: 4px 0; }
+  .sites-link details summary::-webkit-details-marker { display: none; }
+  .sites-link details[open] summary::before { content: "▼ "; }
+  .sites-link details summary::before { content: "▶ "; opacity: 0.6; }
+  .sites-link .site-item {
+    padding: 4px 0; border-top: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  }
+  .sites-link .site-item:first-of-type { border-top: 1px solid var(--line); }
+  .sites-link .site-item a { color: var(--accent); }
+  .sites-link .site-detail { font-size: 10px; opacity: 0.7; }
+  .sites-link .site-dates { font-size: 10px; color: var(--muted); }
+
+  .panel { margin-top: 28px; }
+  .panel h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+  .event-row {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: 60px 1fr auto;
+    gap: 8px;
+    align-items: baseline;
+    font-size: 12px;
+  }
+  .ev-time { color: var(--muted); font-size: 11px; }
+  .ev-open { color: var(--green); font-weight: 600; font-size: 11px; }
+  .ev-closed { color: var(--muted); font-size: 11px; }
+  .empty-panel { font-size: 12px; color: var(--muted); padding: 8px 0; }
+
+  .footer { margin-top: 24px; font-size: 11px; color: var(--muted); }
+  .footer a { color: var(--accent); }
+  a { color: var(--accent); }
+
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; background: var(--pill-bg); font-size: 11px; }
+  .pill.warn { background: var(--pill-warn-bg); color: #fff; }
+
+  @media (max-width: 480px) {
+    .wrap { padding: 12px; }
+    header.top { gap: 8px; }
+    .card { padding: 10px 12px; border-radius: 8px; }
+    .card-title a { font-size: 14px; }
+    .date-row { grid-template-columns: 64px 1fr auto; }
+  }
 </style>
 </head>
 <body>
-<h1>campspot-checker</h1>
-<div class="actions">
-  <button id="poll-btn">Poll now</button>
-  <span class="flash" id="poll-flash"></span>
-</div>
-<div class="meta" id="meta">loading…</div>
-<table>
-  <thead>
-    <tr>
-      <th>On</th>
-      <th class="sortable" data-sort="name">Campground</th>
-      <th class="sortable" data-sort="drive">Drive to valley</th>
-      <th class="sortable" data-sort="elev">Elev</th>
-      <th>Season</th>
-      <th class="sortable" data-sort="total">Sites</th>
-      <th class="sortable" data-sort="lastPoll">Last poll</th>
-      <th class="sortable" data-sort="status">Status</th>
-      <th>Available</th>
-    </tr>
-  </thead>
-  <tbody id="rows"></tbody>
-</table>
-<div class="panel">
-  <h2>Recent events</h2>
-  <div id="events" class="empty-panel">loading…</div>
-</div>
+<div class="wrap">
+  <header class="top">
+    <h1>campspot-checker</h1>
+    <div class="actions">
+      <button id="poll-btn">Poll now</button>
+      <span class="flash" id="poll-flash"></span>
+    </div>
+    <div class="meta" id="meta">loading…</div>
+  </header>
 
-<div class="footer">Auto-refreshes every 5 seconds. Click a header to sort. <a href="/api/status">/api/status</a> · <a href="/api/history">/api/history</a></div>
+  <main class="cards" id="cards"></main>
+
+  <section class="panel">
+    <h2>Recent events</h2>
+    <div id="events" class="empty-panel">loading…</div>
+  </section>
+
+  <div class="footer">
+    Auto-refreshes every 5 seconds. Weather: prior-year actuals from open-meteo.com.
+    <a href="/api/status">/api/status</a> · <a href="/api/history">/api/history</a>
+  </div>
+</div>
 
 <script>
 let lastData = null
-let sortKey = 'drive'
-let sortDir = 'asc'
+
+const WKDAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+
+const escape = (s) => String(s).replace(/[&<>"]/g, c => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'
+}[c]))
 
 const fmtAgo = (iso) => {
   if (!iso) return '—'
@@ -114,100 +256,120 @@ const fmtAgo = (iso) => {
   return Math.floor(sec / 3600) + 'h ago'
 }
 
+const fmtDateShort = (iso) => {
+  const d = new Date(iso)
+  return WKDAY[d.getUTCDay()] + ' ' + iso.slice(5, 10)
+}
+
 const fmtDrive = (mins) => {
-  if (mins == null) return '—'
+  if (mins == null) return null
   if (mins === 0) return 'in valley'
   if (mins < 60) return mins + ' min'
   const h = Math.floor(mins / 60)
   const m = mins % 60
-  return m ? \`\${h}h \${m}m\` : \`\${h}h\`
+  return m ? h + 'h ' + m + 'm' : h + 'h'
 }
 
-const fmtElev = (ft) => ft == null ? '—' : ft.toLocaleString() + ' ft'
-
-const escape = (s) => String(s).replace(/[&<>"]/g, c => ({
-  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'
-}[c]))
-
-const WKDAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
-const fmtDateShort = (iso) => {
-  const d = new Date(iso)
-  return \`\${WKDAY[d.getUTCDay()]} \${iso.slice(5, 10)}\`
+const renderWeather = (w) => {
+  if (!w) return '<span class="weather"><span class="temps muted">—</span></span>'
+  const tmax = w.tmaxF != null ? Math.round(w.tmaxF) : null
+  const tmin = w.tminF != null ? Math.round(w.tminF) : null
+  const cold = tmin != null && tmin < 40
+  const temps = (tmax != null && tmin != null) ? \`\${tmax}°/\${tmin}°\` : '—'
+  const snow = (w.snowfallCm != null && w.snowfallCm > 0) ? \`<span class="snow" title="\${w.snowfallCm}cm snow">❄</span>\` : ''
+  return \`<span class="weather"><span class="temps\${cold ? ' cold' : ''}">\${escape(temps)}</span>\${snow}</span>\`
 }
 
-const renderDateCounts = (availableByDate) => {
-  const entries = Object.entries(availableByDate || {})
-    .filter(([_, n]) => n > 0)
-    .sort(([a], [b]) => a.localeCompare(b))
-  if (!entries.length) return ''
-  return entries.map(([date, n]) =>
-    \`<span class="pill date-pill">\${escape(fmtDateShort(date))}: \${n}</span>\`
-  ).join(' ')
+const renderSiteItem = (s) => {
+  const url = \`https://www.recreation.gov/camping/campsites/\${escape(s.campsiteId)}\`
+  const detail = [s.loop, s.campsiteType, s.maxPeople ? 'max ' + s.maxPeople : null].filter(Boolean).join(' · ')
+  const dates = (s.availableDates || []).map(fmtDateShort).join(', ')
+  return \`<div class="site-item">
+    <a href="\${url}" target="_blank" rel="noopener">Site \${escape(s.siteNO)}</a>
+    \${detail ? \`<span class="site-detail">\${escape(detail)}</span>\` : ''}
+    <span class="site-dates">\${escape(dates)}</span>
+  </div>\`
 }
 
-const renderSiteDetail = (s) => {
-  const bits = [s.loop, s.campsiteType, s.maxPeople ? \`max \${s.maxPeople}\` : null]
-    .filter(Boolean)
-  if (!bits.length) return ''
-  return \`<span class="site-detail">\${escape(bits.join(' · '))}</span>\`
-}
-
-const renderSiteDates = (dates) => {
-  if (!dates || !dates.length) return ''
-  return dates.map(d => \`<span class="pill date-pill">\${escape(fmtDateShort(d))}</span>\`).join(' ')
-}
-
-const renderSites = (cg) => {
-  const sites = cg.availableSites || []
-  if (!sites.length) return '—'
-  const counts = renderDateCounts(cg.availableByDate)
-  const shown = sites.slice(0, 5)
-  const more = sites.length - shown.length
-  const siteRows = shown.map(s =>
-    \`<div class="site-row">
-       <a href="\${escape(s.url)}" target="_blank">Site \${escape(s.siteNO)}</a>
-       \${renderSiteDetail(s)}
-       <div class="site-dates">\${renderSiteDates(s.availableDates)}</div>
-     </div>\`
-  ).join('')
-  const moreLine = more > 0 ? \`<div class="more">+\${more} more</div>\` : ''
-  return \`<div class="date-counts">\${counts}</div>\${siteRows}\${moreLine}\`
-}
-
-const renderStatus = (cg) => {
-  const cls = cg.status
-  const total = (cg.availableSites || []).length
-  let label = cg.status
-  if (cg.status === 'available') label = \`AVAILABLE (\${total})\`
-  if (cg.status === 'all_reserved') label = 'all reserved'
-  if (cg.status === 'pending') label = 'pending first poll'
-  if (cg.status === 'error') label = 'ERROR'
-  return \`<span class="status \${cls}">\${escape(label)}</span>\` +
-         (cg.error ? \`<div class="err">\${escape(cg.error)}</div>\` : '')
-}
-
-const STATUS_RANK = { available: 0, error: 1, pending: 2, all_reserved: 3 }
-
-const sortValue = (cg, key) => {
+const renderCard = (cg) => {
+  const bookingUrl = \`https://www.recreation.gov/camping/campgrounds/\${cg.id}\`
   const m = cg.meta || {}
-  if (key === 'name') return cg.name.toLowerCase()
-  if (key === 'drive') return m.valleyDriveMinutes ?? Infinity
-  if (key === 'elev') return m.elevationFt ?? -Infinity
-  if (key === 'total') return m.totalSites ?? -Infinity
-  if (key === 'lastPoll') return cg.lastPolledAt ? new Date(cg.lastPolledAt).getTime() : -Infinity
-  if (key === 'status') return STATUS_RANK[cg.status] ?? 99
-  return 0
-}
+  const metaBits = [
+    fmtDrive(m.valleyDriveMinutes),
+    m.elevationFt ? m.elevationFt.toLocaleString() + ' ft' : null,
+    m.season,
+    m.totalSites ? m.totalSites + ' sites' : null,
+    m.accessType,
+  ].filter(Boolean)
+  const metaLine = metaBits.map(escape).join(' <span class="sep">·</span> ')
 
-const sortRows = (campgrounds) => {
-  const dir = sortDir === 'asc' ? 1 : -1
-  return [...campgrounds].sort((a, b) => {
-    const va = sortValue(a, sortKey)
-    const vb = sortValue(b, sortKey)
-    if (va < vb) return -1 * dir
-    if (va > vb) return 1 * dir
-    return 0
-  })
+  const checked = cg.enabled !== false ? 'checked' : ''
+  const disabledCls = cg.enabled === false ? ' disabled' : ''
+
+  let statusLabel = cg.status
+  let countPill = ''
+  if (cg.status === 'available') {
+    statusLabel = 'AVAILABLE'
+    const datesWithSites = Object.values(cg.availableByDate || {}).filter(n => n > 0).length
+    countPill = \`<span class="count-pill">\${cg.availableSites.length} sites · \${datesWithSites} date\${datesWithSites === 1 ? '' : 's'}</span>\`
+  } else if (cg.status === 'all_reserved') {
+    statusLabel = 'all reserved'
+  } else if (cg.status === 'pending') {
+    statusLabel = 'pending first poll'
+  } else if (cg.status === 'error') {
+    statusLabel = 'ERROR'
+  }
+
+  // Build per-date list: only rows where there's >0 availability OR show all dates if no openings
+  const dateEntries = Object.entries(cg.availableByDate || {})
+  const datesWithSites = dateEntries.filter(([_, n]) => n > 0).sort(([a], [b]) => a.localeCompare(b))
+  const visibleDates = datesWithSites.slice(0, 12)
+  const hiddenCount = datesWithSites.length - visibleDates.length
+
+  const dateListHtml = visibleDates.length > 0 ? \`
+    <ul class="date-list">
+      \${visibleDates.map(([date, count]) => {
+        const w = (cg.weatherByDate || {})[date]
+        return \`<li class="date-row">
+          <span class="date-label">\${escape(fmtDateShort(date))}</span>
+          \${renderWeather(w)}
+          <span class="date-count">\${count}</span>
+        </li>\`
+      }).join('')}
+      \${hiddenCount > 0 ? \`<li class="more-dates">+\${hiddenCount} more date\${hiddenCount === 1 ? '' : 's'}</li>\` : ''}
+    </ul>
+  \` : ''
+
+  const sitesHtml = cg.availableSites && cg.availableSites.length > 0 ? \`
+    <div class="sites-link">
+      <details>
+        <summary>View all \${cg.availableSites.length} site\${cg.availableSites.length === 1 ? '' : 's'}</summary>
+        \${cg.availableSites.slice(0, 30).map(renderSiteItem).join('')}
+        \${cg.availableSites.length > 30 ? \`<div class="more-dates">+\${cg.availableSites.length - 30} more sites</div>\` : ''}
+      </details>
+    </div>
+  \` : ''
+
+  return \`<article class="card\${disabledCls}" data-id="\${cg.id}">
+    <div class="card-header">
+      <input type="checkbox" class="toggle" data-id="\${cg.id}" \${checked} title="Enable / disable polling">
+      <div class="card-title">
+        <div>
+          \${cg.park ? \`<span class="park-badge">\${escape(cg.park)}</span>\` : ''}
+          <a href="\${bookingUrl}" target="_blank" rel="noopener">\${escape(cg.name)}</a>
+        </div>
+        <div class="card-meta">\${metaLine}</div>
+      </div>
+    </div>
+    <div class="status-line">
+      <span class="status \${cg.status}">\${escape(statusLabel)}</span>
+      \${countPill}
+      <span class="last-poll">\${escape(fmtAgo(cg.lastPolledAt))}</span>
+    </div>
+    \${cg.error ? \`<div class="err-msg">\${escape(cg.error)}</div>\` : ''}
+    \${dateListHtml}
+    \${sitesHtml}
+  </article>\`
 }
 
 const render = () => {
@@ -220,96 +382,22 @@ const render = () => {
     ? 'first cycle running…'
     : 'waiting to start first cycle'
 
-  const backoffPill = data.backoffMs > 0
-    ? \`<span class="pill warn">backoff \${data.backoffMs}ms</span>\`
-    : ''
-
-  const datesLabel = data.targetDates.length === 1
-    ? data.targetDates[0]
-    : \`\${data.targetDates.length} dates (\${fmtDateShort(data.targetDates[0])} → \${fmtDateShort(data.targetDates[data.targetDates.length - 1])})\`
-
   const monthsLabel = data.monthStarts.length === 1
     ? data.monthStarts[0].slice(0, 7)
     : \`\${data.monthStarts.length} months (\${data.monthStarts[0].slice(0, 7)} → \${data.monthStarts[data.monthStarts.length - 1].slice(0, 7)})\`
 
+  const backoffPill = data.backoffMs > 0
+    ? \`<span class="pill warn">backoff \${data.backoffMs}ms</span>\`
+    : ''
+
   document.getElementById('meta').innerHTML =
-    \`<span>MONTHS: \${escape(monthsLabel)}</span>\` +
-    \`<span>TARGET_DATES: \${escape(datesLabel)}</span>\` +
+    \`<span>\${escape(monthsLabel)}</span>\` +
+    \`<span>\${data.targetDates.length} dates</span>\` +
     \`<span>\${escape(cycleInfo)}</span>\` +
-    \` \${backoffPill}\`
+    backoffPill
 
-  document.querySelectorAll('th.sortable').forEach(th => {
-    const key = th.dataset.sort
-    const arrow = key === sortKey ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''
-    th.innerHTML = th.textContent.replace(/[ ▲▼]+$/, '') +
-                   \`<span class="arrow">\${arrow}</span>\`
-  })
-
-  const sorted = sortRows(data.campgrounds)
-  document.getElementById('rows').innerHTML = sorted.map(cg => {
-    const park = cg.park ? \`[\${escape(cg.park)}] \` : ''
-    const bookingUrl = \`https://www.recreation.gov/camping/campgrounds/\${cg.id}\`
-    const m = cg.meta || {}
-    const accessPill = m.accessType
-      ? \` <span class="pill">\${escape(m.accessType)}</span>\`
-      : ''
-    const rowClass = cg.enabled === false ? 'disabled' : ''
-    const checked = cg.enabled !== false ? 'checked' : ''
-    return \`<tr class="\${rowClass}">
-      <td><input type="checkbox" class="toggle" data-id="\${cg.id}" \${checked} title="Enable / disable polling for this campground"></td>
-      <td>\${park}<a href="\${bookingUrl}" target="_blank">\${escape(cg.name)}</a>\${accessPill}
-          <div class="meta-sub">id:\${cg.id}</div></td>
-      <td class="num">\${fmtDrive(m.valleyDriveMinutes)}</td>
-      <td class="num">\${fmtElev(m.elevationFt)}</td>
-      <td>\${escape(m.season || '—')}</td>
-      <td class="num">\${m.totalSites ?? '—'}</td>
-      <td>\${fmtAgo(cg.lastPolledAt)}</td>
-      <td>\${renderStatus(cg)}</td>
-      <td class="sites">\${renderSites(cg)}</td>
-    </tr>\`
-  }).join('')
+  document.getElementById('cards').innerHTML = data.campgrounds.map(renderCard).join('')
 }
-
-document.querySelectorAll('th.sortable').forEach(th => {
-  th.addEventListener('click', () => {
-    const key = th.dataset.sort
-    if (sortKey === key) {
-      sortDir = sortDir === 'asc' ? 'desc' : 'asc'
-    } else {
-      sortKey = key
-      sortDir = 'asc'
-    }
-    render()
-  })
-})
-
-// Delegated toggle handler (rows re-render every refresh).
-document.getElementById('rows').addEventListener('change', async (e) => {
-  if (!e.target.classList.contains('toggle')) return
-  const id = Number(e.target.dataset.id)
-  const enabled = e.target.checked
-  e.target.disabled = true
-  try {
-    const res = await fetch(\`/api/campgrounds/\${id}/enabled\`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    })
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    // Optimistically reflect in cached state, then refresh
-    if (lastData) {
-      const cg = lastData.campgrounds.find(c => c.id === id)
-      if (cg) cg.enabled = enabled
-    }
-    render()
-    setTimeout(refresh, 500)
-  } catch (err) {
-    setFlash('toggle failed: ' + err.message, 'err')
-    e.target.checked = !enabled // revert visually
-  } finally {
-    setTimeout(() => { e.target.disabled = false }, 300)
-  }
-})
 
 const refresh = async () => {
   try {
@@ -318,15 +406,14 @@ const refresh = async () => {
     lastData = await res.json()
     render()
   } catch (e) {
-    document.getElementById('meta').innerHTML =
-      \`<span class="err">failed to load /api/status: \${escape(e.message)}</span>\`
+    document.getElementById('cards').innerHTML =
+      \`<div class="err-msg">failed to load /api/status: \${escape(e.message)}</div>\`
   }
 }
 
-// Map of campground id → name, populated from /api/status data.
 const cgName = (id) => {
   const cg = lastData?.campgrounds?.find(c => c.id === id)
-  return cg ? \`\${cg.park ? '[' + cg.park + '] ' : ''}\${cg.name}\` : 'id:' + id
+  return cg ? (cg.park ? '[' + cg.park + '] ' : '') + cg.name : 'id:' + id
 }
 
 const renderEvents = (events) => {
@@ -341,14 +428,10 @@ const renderEvents = (events) => {
     const datePart = ev.targetDate ? fmtDateShort(ev.targetDate) : '—'
     const cls = ev.event === 'opened' ? 'ev-open' : 'ev-closed'
     const siteUrl = \`https://www.recreation.gov/camping/campsites/\${escape(ev.campsiteId)}\`
-    const detail = [ev.loop, ev.campsiteType, ev.maxPeople ? \`max \${ev.maxPeople}\` : null]
-      .filter(Boolean).join(' · ')
     return \`<div class="event-row">
       <span class="ev-time">\${fmtAgo(ev.seenAt)}</span>
-      <span>\${escape(cgName(ev.campgroundId))} <a href="\${siteUrl}" target="_blank">Site \${escape(ev.siteNo || ev.campsiteId)}</a>
-            \${detail ? '<span class="site-detail">' + escape(detail) + '</span>' : ''}</span>
+      <span>\${escape(cgName(ev.campgroundId))} <a href="\${siteUrl}" target="_blank">Site \${escape(ev.siteNo || ev.campsiteId)}</a> · \${escape(datePart)}</span>
       <span class="\${cls}">\${ev.event}</span>
-      <span>\${escape(datePart)}</span>
     </div>\`
   }).join('')
 }
@@ -361,7 +444,7 @@ const refreshEvents = async () => {
     renderEvents(data.events || [])
   } catch (e) {
     document.getElementById('events').innerHTML =
-      \`<span class="err">failed to load /api/history: \${escape(e.message)}</span>\`
+      \`<span class="err-msg">failed to load /api/history: \${escape(e.message)}</span>\`
   }
 }
 
@@ -385,7 +468,6 @@ pollBtn.addEventListener('click', async () => {
     const res = await fetch('/api/poll', { method: 'POST' })
     if (res.ok) {
       setFlash('poll started — watch the timestamps refresh', 'ok')
-      // Force an immediate refresh after a short delay so user sees movement
       setTimeout(refresh, 1500)
     } else {
       const body = await res.json().catch(() => ({}))
@@ -396,6 +478,32 @@ pollBtn.addEventListener('click', async () => {
     setFlash('request failed: ' + e.message, 'err')
   } finally {
     setTimeout(() => { pollBtn.disabled = false }, 1000)
+  }
+})
+
+document.getElementById('cards').addEventListener('change', async (e) => {
+  if (!e.target.classList.contains('toggle')) return
+  const id = Number(e.target.dataset.id)
+  const enabled = e.target.checked
+  e.target.disabled = true
+  try {
+    const res = await fetch(\`/api/campgrounds/\${id}/enabled\`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    if (lastData) {
+      const cg = lastData.campgrounds.find(c => c.id === id)
+      if (cg) cg.enabled = enabled
+    }
+    render()
+    setTimeout(refresh, 500)
+  } catch (err) {
+    setFlash('toggle failed: ' + err.message, 'err')
+    e.target.checked = !enabled
+  } finally {
+    setTimeout(() => { e.target.disabled = false }, 300)
   }
 })
 </script>
