@@ -38,10 +38,26 @@ export const STATUS_PAGE_HTML = `<!doctype html>
           background: #0002; font-size: 11px; }
   .pill.warn { background: #c3331a; color: #fff; }
   .num { text-align: right; white-space: nowrap; }
+  .actions { margin-bottom: 12px; }
+  button { font: inherit; padding: 6px 12px; border: 1px solid #888; border-radius: 4px;
+           background: #fff; color: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { background: #eee; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  @media (prefers-color-scheme: dark) {
+    button { background: #222; border-color: #555; }
+    button:hover:not(:disabled) { background: #2a2a2a; }
+  }
+  .flash { margin-left: 12px; font-size: 12px; }
+  .flash.ok { color: #1a7f1a; }
+  .flash.err { color: #c33; }
 </style>
 </head>
 <body>
 <h1>campspot-checker</h1>
+<div class="actions">
+  <button id="poll-btn">Poll now</button>
+  <span class="flash" id="poll-flash"></span>
+</div>
 <div class="meta" id="meta">loading…</div>
 <table>
   <thead>
@@ -210,6 +226,35 @@ const refresh = async () => {
 
 refresh()
 setInterval(refresh, 5000)
+
+const pollBtn = document.getElementById('poll-btn')
+const pollFlash = document.getElementById('poll-flash')
+const setFlash = (msg, cls) => {
+  pollFlash.textContent = msg
+  pollFlash.className = 'flash ' + (cls || '')
+  if (msg) setTimeout(() => { if (pollFlash.textContent === msg) setFlash('', '') }, 4000)
+}
+
+pollBtn.addEventListener('click', async () => {
+  pollBtn.disabled = true
+  setFlash('triggering…', '')
+  try {
+    const res = await fetch('/api/poll', { method: 'POST' })
+    if (res.ok) {
+      setFlash('poll started — watch the timestamps refresh', 'ok')
+      // Force an immediate refresh after a short delay so user sees movement
+      setTimeout(refresh, 1500)
+    } else {
+      const body = await res.json().catch(() => ({}))
+      const reason = body.reason ? \` (\${body.reason})\` : ''
+      setFlash(\`already running\${reason}\`, 'err')
+    }
+  } catch (e) {
+    setFlash('request failed: ' + e.message, 'err')
+  } finally {
+    setTimeout(() => { pollBtn.disabled = false }, 1000)
+  }
+})
 </script>
 </body>
 </html>`

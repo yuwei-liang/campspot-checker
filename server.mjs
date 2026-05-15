@@ -100,6 +100,14 @@ app.get('/api/status', (req, res) => {
         serverTime: new Date().toISOString(),
     });
 });
+app.post('/api/poll', (req, res) => {
+    if (checker.cycleState.currentlyRunning) {
+        return res.status(409).json({ ok: false, reason: 'already_running' });
+    }
+    logger.info('Manual poll triggered via /api/poll');
+    checker.executeCheck().catch(err => logger.error(`manual poll: ${err.message}`));
+    res.status(202).json({ ok: true, startedAt: new Date().toISOString() });
+});
 
 app.listen(PORT, HOST, () => {
     logger.info(`Running on http://${HOST}:${PORT}`);

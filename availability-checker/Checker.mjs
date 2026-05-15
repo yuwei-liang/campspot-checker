@@ -66,16 +66,23 @@ class Checker {
     }
 
     async executeCheck() {
+        if (this.cycleState.currentlyRunning) {
+            return { ran: false, reason: 'already_running' }
+        }
         this.cycleState.currentlyRunning = true
         this.cycleState.lastStartedAt = new Date().toISOString()
-        for (const campground of this.campgrounds) {
-            await this.__sleep(INTER_CAMPGROUND_SLEEP_MS)
-            await this.checkCampground(campground)
+        try {
+            for (const campground of this.campgrounds) {
+                await this.__sleep(INTER_CAMPGROUND_SLEEP_MS)
+                await this.checkCampground(campground)
+            }
+        } finally {
+            this.cycleState.lastFinishedAt = new Date().toISOString()
+            this.cycleState.currentlyRunning = false
+            this.cycleState.cycleCount += 1
         }
-        this.cycleState.lastFinishedAt = new Date().toISOString()
-        this.cycleState.currentlyRunning = false
-        this.cycleState.cycleCount += 1
         logger.info("Done!")
+        return { ran: true }
     }
 
     getBackoffMs() {

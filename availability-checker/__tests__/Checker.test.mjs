@@ -73,6 +73,24 @@ describe('Checker', () => {
         expect(byNo['104'].isAvailable).toBe(false)
     })
 
+    test('executeCheck refuses to start a second cycle while one is running', async () => {
+        const checker = new Checker([], TARGET_DATE, WEBHOOK, MONTH_START)
+        // simulate an in-flight cycle
+        checker.cycleState.currentlyRunning = true
+        const result = await checker.executeCheck()
+        expect(result).toEqual({ ran: false, reason: 'already_running' })
+        // state is untouched (caller did not enter the loop)
+        expect(checker.cycleState.cycleCount).toBe(0)
+    })
+
+    test('executeCheck reports ran:true on a clean cycle and increments cycleCount', async () => {
+        const checker = new Checker([], TARGET_DATE, WEBHOOK, MONTH_START)
+        const result = await checker.executeCheck()
+        expect(result).toEqual({ ran: true })
+        expect(checker.cycleState.cycleCount).toBe(1)
+        expect(checker.cycleState.currentlyRunning).toBe(false)
+    })
+
     test('backoff starts at 0', () => {
         const checker = new Checker([], TARGET_DATE, WEBHOOK, MONTH_START)
         expect(checker.getBackoffMs()).toBe(0)
