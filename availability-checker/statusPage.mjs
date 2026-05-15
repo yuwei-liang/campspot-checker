@@ -143,6 +143,9 @@ export const STATUS_PAGE_HTML = `<!doctype html>
   .discord-btn:hover { background: #4752c4; border-color: #4752c4; }
   .discord-btn:active { transform: translateY(1px); }
 
+  .poll-group { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+  .poll-hint { font-size: 10.5px; color: var(--subtle); line-height: 1.2; max-width: 180px; }
+
   .filter-bar { margin: 12px 0 0; min-height: 26px; }
   .link-btn {
     font: inherit; font-size: 12px;
@@ -361,7 +364,10 @@ export const STATUS_PAGE_HTML = `<!doctype html>
     <div class="brand">
       <h1><span class="brand-mark"></span><span id="brand-name">Pitchwatch</span></h1>
       <div class="header-actions">
-        <button id="poll-btn" class="primary"></button>
+        <div class="poll-group">
+          <button id="poll-btn"></button>
+          <span class="poll-hint" id="poll-hint"></span>
+        </div>
         <a id="discord-link" class="discord-btn" target="_blank" rel="noopener" hidden></a>
         <span class="flash" id="poll-flash"></span>
         <div class="lang-switch">
@@ -429,6 +435,9 @@ const I18N = {
     join_discord: "Join Discord",
     show_disabled: (n) => \`+\${n} disabled (show)\`,
     hide_disabled: (n) => \`\${n} disabled shown (hide)\`,
+    poll_btn_hint: "use sparingly · may hit rate limits",
+    poll_btn_tooltip: "Auto-poll already runs every 90s. Manual triggers can rate-limit us — please don't tap unless you really need to.",
+    poll_confirm: "Heads up: auto-polling already runs every 90s. Manual triggers are usually unnecessary, and clicking repeatedly may rate-limit recreation.gov and delay everyone's notifications.\\n\\nProceed anyway?",
     max_people: (n) => \`max \${n}\`,
     event_opened: "opened",
     event_closed: "closed",
@@ -475,6 +484,9 @@ const I18N = {
     join_discord: "加入 Discord",
     show_disabled: (n) => \`\${n} 个已停用（点击显示）\`,
     hide_disabled: (n) => \`已显示 \${n} 个已停用（点击隐藏）\`,
+    poll_btn_hint: "尽量别点 · 容易触发限流",
+    poll_btn_tooltip: "后台每 90 秒自动检查一次。手动触发容易触发 recreation.gov 限流，影响后续推送，没必要别点。",
+    poll_confirm: "提醒：后台每 90 秒已经在自动检查了。手动触发通常没必要，连续点会触发 recreation.gov 限流，导致大家的推送变慢。\\n\\n确定要现在触发吗？",
     max_people: (n) => \`最多 \${n} 人\`,
     event_opened: "开放",
     event_closed: "关闭",
@@ -728,6 +740,8 @@ const applyLang = () => {
   document.getElementById('brand-name').textContent = T().brand_name
   document.getElementById('page-desc').textContent = T().title_desc
   document.getElementById('poll-btn').textContent = T().poll_now
+  document.getElementById('poll-btn').title = T().poll_btn_tooltip
+  document.getElementById('poll-hint').textContent = T().poll_btn_hint
   document.getElementById('recent-events-heading').textContent = T().recent_events
   document.getElementById('footer-text').textContent = T().footer
   document.getElementById('about-link').textContent = T().about_link
@@ -765,6 +779,7 @@ document.getElementById('toggle-disabled').addEventListener('click', () => {
 })
 
 pollBtn.addEventListener('click', async () => {
+  if (!window.confirm(T().poll_confirm)) return
   pollBtn.disabled = true
   setFlash(T().triggering, '')
   try {
