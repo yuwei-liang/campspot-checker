@@ -38,5 +38,15 @@
         "season": "year-round",
         "totalSites": 238,
         "accessType": "drive-in"
+    },
+    {
+        "park": "Sequoia",
+        "name": "Atwell Mill Campground",
+        "id": 10044710,
+        "valleyDriveMinutes": null,
+        "elevationFt": 6650,
+        "season": "May-Oct",
+        "totalSites": 21,
+        "accessType": "drive-in"
     }
 ]

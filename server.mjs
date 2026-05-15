@@ -109,9 +109,13 @@ app.post('/api/poll', (req, res) => {
     res.status(202).json({ ok: true, startedAt: new Date().toISOString() });
 });
 
-app.listen(PORT, HOST, () => {
+app.listen(PORT, HOST, async () => {
     logger.info(`Running on http://${HOST}:${PORT}`);
     logger.info(`MONTH_START=${config.monthStart}, TARGET_DATE=${config.targetDate}, POLL_INTERVAL_MS=${config.pollIntervalMs}`)
+    // Run one cycle immediately so the dashboard shows real data without waiting
+    // a full POLL_INTERVAL_MS at startup. Don't await — let the server start
+    // serving HTTP traffic right away.
+    checker.executeCheck().catch(err => logger.error(`initial executeCheck: ${err.message}`))
     scheduleNextCheck(checker, config.pollIntervalMs)
     liveCheck(heartbeatNotifier)
 });
