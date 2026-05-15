@@ -2,6 +2,7 @@ import axios from 'axios'
 import _ from 'lodash'
 import Campground from './Campground.mjs'
 import Notifier from './Notifier.mjs'
+import { weekdayLabel } from './configLoader.mjs'
 
 // Deny-list of statuses that mean "do not alert." "Closed" was added 2026-05-15
 // after a smoke check found Upper Pines / Lower Pines returning it for off-season
@@ -24,19 +25,18 @@ class Checker {
     backoffMs = 0
     lastErrorReason = null
 
-    constructor(campgrounds, targetDate, discordWebhookURL, monthStart) {
+    constructor(campgrounds, targetDates, discordWebhookURL, monthStart) {
         if (!monthStart) {
             throw new Error('Checker: monthStart is required')
         }
-        if (!targetDate) {
-            throw new Error('Checker: targetDate is required')
+        if (!Array.isArray(targetDates) || targetDates.length === 0) {
+            throw new Error('Checker: targetDates must be a non-empty array')
         }
-        this.targetDate = targetDate
+        this.targetDates = targetDates
         this.monthStart = monthStart
         this.notifier = new Notifier(discordWebhookURL)
         this.campgrounds = campgrounds
 
-        // Status tracking for the /api/status endpoint.
         this.cycleState = {
             lastStartedAt: null,
             lastFinishedAt: null,
@@ -58,7 +58,7 @@ class Checker {
                 },
                 lastPolledAt: null,
                 status: 'pending',
-                availableSitesCount: 0,
+                availableByDate: {},
                 availableSites: [],
                 error: null,
             })
@@ -91,7 +91,7 @@ class Checker {
 
     getStatus() {
         return {
-            targetDate: this.targetDate,
+            targetDates: this.targetDates,
             monthStart: this.monthStart,
             backoffMs: this.backoffMs,
             lastErrorReason: this.lastErrorReason,
@@ -104,72 +104,100 @@ class Checker {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
+    /**
+     * For each site in the API response, return the set of target dates on which
+     * it is available, plus the static site detail (loop, campsite_type,
+     * max_num_people) that's worth showing in the UI / Discord message.
+     */
     __getSiteAvailabilities = (json) => {
         const sites = json.campsites;
-        const result = _.map(sites, (siteData, siteNum) => {
-            const targetAvailability = _.get(
-                siteData.availabilities,
-                this.targetDate
-            )
-            const isAvailable = !_.includes(
-                UNAVAILABLE_STATUSES,
-                targetAvailability
-            );
-            const siteNO = siteData.site;
-
+        return _.map(sites, (siteData) => {
+            const availableDates = this.targetDates.filter((date) => {
+                const status = _.get(siteData.availabilities, date)
+                return !_.includes(UNAVAILABLE_STATUSES, status)
+            })
             return {
-                siteNO,
-                isAvailable,
+                siteNO: siteData.site,
                 campsiteId: siteData.campsite_id,
-                availability: targetAvailability,
+                loop: siteData.loop || null,
+                campsiteType: siteData.campsite_type || null,
+                maxPeople: siteData.max_num_people ?? null,
+                availableDates,
             }
         })
-        return result;
     }
 
     /**
-     * Pure formatter: takes a campground + a list of available sites and
-     * produces a Discord-friendly message with booking links.
-     * Exported as a method so it's directly testable.
+     * Pure formatter: takes a campground + a list of {site, availableDates}
+     * records and produces a Discord-friendly message with booking links,
+     * grouped by date so the reader can see at a glance which night opens up.
      */
-    formatAvailabilityMessage(campground, availableSites, targetDate) {
-        const header = `${campground.toString()} ${availableSites.length} site(s) available on ${targetDate}`
+    formatAvailabilityMessage(campground, availableSites) {
+        const header = `${campground.toString()} ${availableSites.length} site(s) available`
         const bookingLink = `Book: ${campground.getBookingUrl()}`
-        const siteLines = availableSites.map(({ siteNO, campsiteId }) => {
-            const url = Campground.getCampsiteUrl(campsiteId)
-            return `- Site ${siteNO}: ${url}`
-        })
-        return [header, bookingLink, ...siteLines].join('\n')
+
+        // Group by date
+        const byDate = new Map()
+        for (const site of availableSites) {
+            for (const date of site.availableDates) {
+                if (!byDate.has(date)) byDate.set(date, [])
+                byDate.get(date).push(site)
+            }
+        }
+
+        const sections = [...byDate.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([date, sites]) => {
+                const datePart = date.slice(0, 10)
+                const lines = [`${weekdayLabel(date)} ${datePart} (${sites.length}):`]
+                for (const s of sites) {
+                    const url = Campground.getCampsiteUrl(s.campsiteId)
+                    const detail = [s.loop, s.campsiteType, s.maxPeople ? `max ${s.maxPeople}` : null]
+                        .filter(Boolean).join(', ')
+                    const detailPart = detail ? ` (${detail})` : ''
+                    lines.push(`- Site ${s.siteNO}${detailPart}: ${url}`)
+                }
+                return lines.join('\n')
+            })
+
+        return [header, bookingLink, '', ...sections].join('\n')
     }
 
     report = (campground, res, options = { excludedSites: [] }) => {
-        const availabilities = this.__getSiteAvailabilities(res.data)
+        const allSites = this.__getSiteAvailabilities(res.data)
         const excludedSites = options.excludedSites
-        const availableSites = _.filter(availabilities, ({ siteNO, isAvailable }) => {
-            if (_.includes(excludedSites, siteNO)) {
-                return false
-            }
-            return isAvailable;
-        })
+        const availableSites = allSites
+            .filter((s) => s.availableDates.length > 0)
+            .filter((s) => !_.includes(excludedSites, s.siteNO))
+
+        // Per-date counts (across all sites)
+        const availableByDate = {}
+        for (const date of this.targetDates) {
+            availableByDate[date] = availableSites.filter(s => s.availableDates.includes(date)).length
+        }
 
         const state = this.campgroundState.get(campground.id)
         state.lastPolledAt = new Date().toISOString()
-        state.availableSitesCount = availableSites.length
+        state.availableByDate = availableByDate
         state.availableSites = availableSites.map(s => ({
             siteNO: s.siteNO,
             campsiteId: s.campsiteId,
             url: Campground.getCampsiteUrl(s.campsiteId),
+            loop: s.loop,
+            campsiteType: s.campsiteType,
+            maxPeople: s.maxPeople,
+            availableDates: s.availableDates,
         }))
         state.error = null
 
         if (availableSites.length > 0) {
             state.status = 'available'
-            const message = this.formatAvailabilityMessage(campground, availableSites, this.targetDate)
+            const message = this.formatAvailabilityMessage(campground, state.availableSites)
             logger.info(message)
             this.notifier.notify(message)
         } else {
             state.status = 'all_reserved'
-            logger.info(`${campground.toString()} ALL RESERVED`)
+            logger.info(`${campground.toString()} ALL RESERVED across ${this.targetDates.length} date(s)`)
         }
     }
 

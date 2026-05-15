@@ -50,6 +50,13 @@ export const STATUS_PAGE_HTML = `<!doctype html>
   .flash { margin-left: 12px; font-size: 12px; }
   .flash.ok { color: #1a7f1a; }
   .flash.err { color: #c33; }
+  .date-counts { margin-bottom: 4px; }
+  .date-pill { background: #1a7f1a22; }
+  .site-row { padding: 2px 0; border-bottom: 1px dashed #ccc4; line-height: 1.3; }
+  .site-row:last-of-type { border-bottom: none; }
+  .site-detail { font-size: 11px; opacity: 0.65; margin-left: 6px; }
+  .site-dates { display: inline-block; margin-left: 6px; }
+  .more { font-size: 11px; opacity: 0.6; padding-top: 4px; }
 </style>
 </head>
 <body>
@@ -104,21 +111,56 @@ const escape = (s) => String(s).replace(/[&<>"]/g, c => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'
 }[c]))
 
-const renderSites = (sites) => {
+const WKDAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+const fmtDateShort = (iso) => {
+  const d = new Date(iso)
+  return \`\${WKDAY[d.getUTCDay()]} \${iso.slice(5, 10)}\`
+}
+
+const renderDateCounts = (availableByDate) => {
+  const entries = Object.entries(availableByDate || {})
+    .filter(([_, n]) => n > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+  if (!entries.length) return ''
+  return entries.map(([date, n]) =>
+    \`<span class="pill date-pill">\${escape(fmtDateShort(date))}: \${n}</span>\`
+  ).join(' ')
+}
+
+const renderSiteDetail = (s) => {
+  const bits = [s.loop, s.campsiteType, s.maxPeople ? \`max \${s.maxPeople}\` : null]
+    .filter(Boolean)
+  if (!bits.length) return ''
+  return \`<span class="site-detail">\${escape(bits.join(' · '))}</span>\`
+}
+
+const renderSiteDates = (dates) => {
+  if (!dates || !dates.length) return ''
+  return dates.map(d => \`<span class="pill date-pill">\${escape(fmtDateShort(d))}</span>\`).join(' ')
+}
+
+const renderSites = (cg) => {
+  const sites = cg.availableSites || []
   if (!sites.length) return '—'
+  const counts = renderDateCounts(cg.availableByDate)
   const shown = sites.slice(0, 5)
   const more = sites.length - shown.length
-  let out = shown.map(s =>
-    \`<a href="\${escape(s.url)}" target="_blank">Site \${escape(s.siteNO)}</a>\`
-  ).join(', ')
-  if (more > 0) out += \` <span class="pill">+\${more} more</span>\`
-  return out
+  const siteRows = shown.map(s =>
+    \`<div class="site-row">
+       <a href="\${escape(s.url)}" target="_blank">Site \${escape(s.siteNO)}</a>
+       \${renderSiteDetail(s)}
+       <div class="site-dates">\${renderSiteDates(s.availableDates)}</div>
+     </div>\`
+  ).join('')
+  const moreLine = more > 0 ? \`<div class="more">+\${more} more</div>\` : ''
+  return \`<div class="date-counts">\${counts}</div>\${siteRows}\${moreLine}\`
 }
 
 const renderStatus = (cg) => {
   const cls = cg.status
+  const total = (cg.availableSites || []).length
   let label = cg.status
-  if (cg.status === 'available') label = \`AVAILABLE (\${cg.availableSitesCount})\`
+  if (cg.status === 'available') label = \`AVAILABLE (\${total})\`
   if (cg.status === 'all_reserved') label = 'all reserved'
   if (cg.status === 'pending') label = 'pending first poll'
   if (cg.status === 'error') label = 'ERROR'
@@ -164,8 +206,12 @@ const render = () => {
     ? \`<span class="pill warn">backoff \${data.backoffMs}ms</span>\`
     : ''
 
+  const datesLabel = data.targetDates.length === 1
+    ? data.targetDates[0]
+    : \`\${data.targetDates.length} dates (\${fmtDateShort(data.targetDates[0])} → \${fmtDateShort(data.targetDates[data.targetDates.length - 1])})\`
+
   document.getElementById('meta').innerHTML =
-    \`<span>TARGET_DATE: \${escape(data.targetDate)}</span>\` +
+    \`<span>TARGET_DATES: \${escape(datesLabel)}</span>\` +
     \`<span>MONTH_START: \${escape(data.monthStart)}</span>\` +
     \`<span>\${escape(cycleInfo)}</span>\` +
     \` \${backoffPill}\`
@@ -194,7 +240,7 @@ const render = () => {
       <td class="num">\${m.totalSites ?? '—'}</td>
       <td>\${fmtAgo(cg.lastPolledAt)}</td>
       <td>\${renderStatus(cg)}</td>
-      <td class="sites">\${renderSites(cg.availableSites)}</td>
+      <td class="sites">\${renderSites(cg)}</td>
     </tr>\`
   }).join('')
 }

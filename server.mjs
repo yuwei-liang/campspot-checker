@@ -83,7 +83,7 @@ const scheduleNextCheck = (checker, baseIntervalMs) => {
 
 const checker = new Checker(
     campgrounds,
-    config.targetDate,
+    config.targetDates,
     config.webhookUrl,
     config.monthStart,
 );
@@ -111,7 +111,7 @@ app.post('/api/poll', (req, res) => {
 
 app.listen(PORT, HOST, async () => {
     logger.info(`Running on http://${HOST}:${PORT}`);
-    logger.info(`MONTH_START=${config.monthStart}, TARGET_DATE=${config.targetDate}, POLL_INTERVAL_MS=${config.pollIntervalMs}`)
+    logger.info(`MONTH_START=${config.monthStart}, TARGET_DATES=${config.targetDates.length} dates, POLL_INTERVAL_MS=${config.pollIntervalMs}`)
     // Run one cycle immediately so the dashboard shows real data without waiting
     // a full POLL_INTERVAL_MS at startup. Don't await — let the server start
     // serving HTTP traffic right away.
