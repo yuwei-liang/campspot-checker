@@ -5,6 +5,7 @@ export const STATUS_PAGE_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#f7f6f2" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>Pitchwatch</title>
 <style>
   :root {

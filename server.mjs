@@ -126,6 +126,7 @@ const scheduleNextCheck = (checker, baseIntervalMs) => {
 
 const app = express()
 app.use(express.json())
+app.use(express.static('public'))
 app.get('/', (req, res) => {
     res.type('html').send(STATUS_PAGE_HTML);
 });
