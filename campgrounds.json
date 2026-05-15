@@ -2,21 +2,41 @@
     {
         "park": "Yosemite",
         "name": "Lower Pines Campground",
-        "id": 232450
+        "id": 232450,
+        "valleyDriveMinutes": 0,
+        "elevationFt": 4000,
+        "season": "Apr-Oct",
+        "totalSites": 60,
+        "accessType": "drive-in"
     },
     {
         "park": "Yosemite",
         "name": "North Pines Campground",
-        "id": 232449
+        "id": 232449,
+        "valleyDriveMinutes": 0,
+        "elevationFt": 4000,
+        "season": "Apr-Oct",
+        "totalSites": 81,
+        "accessType": "drive-in"
     },
     {
         "park": "Yosemite",
         "name": "Wawona Campground",
-        "id": 232446
+        "id": 232446,
+        "valleyDriveMinutes": 45,
+        "elevationFt": 4000,
+        "season": "year-round",
+        "totalSites": 93,
+        "accessType": "drive-in"
     },
     {
         "park": "Yosemite",
         "name": "Upper Pines Campground",
-        "id": 232447
+        "id": 232447,
+        "valleyDriveMinutes": 0,
+        "elevationFt": 4000,
+        "season": "year-round",
+        "totalSites": 238,
+        "accessType": "drive-in"
     }
 ]

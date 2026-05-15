@@ -49,6 +49,13 @@ class Checker {
                 id: cg.id,
                 name: cg.name,
                 park: cg.park || '',
+                meta: {
+                    valleyDriveMinutes: cg.valleyDriveMinutes ?? null,
+                    elevationFt: cg.elevationFt ?? null,
+                    season: cg.season ?? null,
+                    totalSites: cg.totalSites ?? null,
+                    accessType: cg.accessType ?? null,
+                },
                 lastPolledAt: null,
                 status: 'pending',
                 availableSitesCount: 0,

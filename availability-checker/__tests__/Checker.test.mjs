@@ -128,6 +128,41 @@ describe('Checker', () => {
     })
 
     describe('getStatus', () => {
+        test('campground metadata fields surface in status output', () => {
+            const campgrounds = [{
+                name: 'Upper Pines',
+                id: 232447,
+                park: 'Yosemite',
+                valleyDriveMinutes: 0,
+                elevationFt: 4000,
+                season: 'year-round',
+                totalSites: 238,
+                accessType: 'drive-in',
+            }]
+            const checker = new Checker(campgrounds, TARGET_DATE, WEBHOOK, MONTH_START)
+            const cg = checker.getStatus().campgrounds[0]
+            expect(cg.meta).toEqual({
+                valleyDriveMinutes: 0,
+                elevationFt: 4000,
+                season: 'year-round',
+                totalSites: 238,
+                accessType: 'drive-in',
+            })
+        })
+
+        test('campground metadata defaults to nulls when omitted', () => {
+            const campgrounds = [{ name: 'X', id: 1, park: 'Y' }]
+            const checker = new Checker(campgrounds, TARGET_DATE, WEBHOOK, MONTH_START)
+            const cg = checker.getStatus().campgrounds[0]
+            expect(cg.meta).toEqual({
+                valleyDriveMinutes: null,
+                elevationFt: null,
+                season: null,
+                totalSites: null,
+                accessType: null,
+            })
+        })
+
         test('initial status is pending for every campground, in original order', () => {
             const campgrounds = [
                 { name: 'Upper Pines', id: 232447, park: 'Yosemite' },
