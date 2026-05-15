@@ -35,6 +35,7 @@ const campgrounds = require('./campgrounds.json')
 import Checker from './availability-checker/Checker.mjs'
 import Notifier from './availability-checker/Notifier.mjs'
 import { loadConfig } from './availability-checker/configLoader.mjs'
+import { STATUS_PAGE_HTML } from './availability-checker/statusPage.mjs'
 import express from 'express'
 
 const PORT = 8080
@@ -80,23 +81,29 @@ const scheduleNextCheck = (checker, baseIntervalMs) => {
     }, delay)
 }
 
+const checker = new Checker(
+    campgrounds,
+    config.targetDate,
+    config.webhookUrl,
+    config.monthStart,
+);
+const heartbeatNotifier = new Notifier(config.webhookUrl)
+
 const app = express()
 app.get('/', (req, res) => {
-    res.send('Hello World');
+    res.type('html').send(STATUS_PAGE_HTML);
+});
+app.get('/api/status', (req, res) => {
+    res.json({
+        ...checker.getStatus(),
+        pollIntervalMs: config.pollIntervalMs,
+        serverTime: new Date().toISOString(),
+    });
 });
 
 app.listen(PORT, HOST, () => {
     logger.info(`Running on http://${HOST}:${PORT}`);
     logger.info(`MONTH_START=${config.monthStart}, TARGET_DATE=${config.targetDate}, POLL_INTERVAL_MS=${config.pollIntervalMs}`)
-
-    const checker = new Checker(
-        campgrounds,
-        config.targetDate,
-        config.webhookUrl,
-        config.monthStart,
-    );
-    const heartbeatNotifier = new Notifier(config.webhookUrl)
-
     scheduleNextCheck(checker, config.pollIntervalMs)
     liveCheck(heartbeatNotifier)
 });

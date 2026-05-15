@@ -127,6 +127,85 @@ describe('Checker', () => {
         expect(msg).toContain('Site 045: https://www.recreation.gov/camping/campsites/101')
     })
 
+    describe('getStatus', () => {
+        test('initial status is pending for every campground, in original order', () => {
+            const campgrounds = [
+                { name: 'Upper Pines', id: 232447, park: 'Yosemite' },
+                { name: 'Lower Pines', id: 232450, park: 'Yosemite' },
+            ]
+            const checker = new Checker(campgrounds, TARGET_DATE, WEBHOOK, MONTH_START)
+            const status = checker.getStatus()
+
+            expect(status.targetDate).toBe(TARGET_DATE)
+            expect(status.monthStart).toBe(MONTH_START)
+            expect(status.backoffMs).toBe(0)
+            expect(status.cycle.cycleCount).toBe(0)
+            expect(status.cycle.currentlyRunning).toBe(false)
+            expect(status.campgrounds).toHaveLength(2)
+            expect(status.campgrounds[0].id).toBe(232447)
+            expect(status.campgrounds[0].status).toBe('pending')
+            expect(status.campgrounds[1].id).toBe(232450)
+            expect(status.campgrounds[1].status).toBe('pending')
+        })
+
+        test('report() advances campground state to all_reserved when no sites open', () => {
+            const campgrounds = [{ name: 'Upper Pines', id: 232447, park: 'Yosemite' }]
+            const checker = new Checker(campgrounds, TARGET_DATE, WEBHOOK, MONTH_START)
+            const mockCampground = {
+                id: 232447,
+                toString: () => '[Yosemite][Upper Pines]',
+                getBookingUrl: () => 'https://example.test/cg/232447',
+            }
+            checker.notifier.notify = () => {}
+
+            checker.report(mockCampground, { data: { campsites: { '1': { site: '1', campsite_id: 'c1', availabilities: { [TARGET_DATE]: 'Reserved' } } } } })
+
+            const cg = checker.getStatus().campgrounds[0]
+            expect(cg.status).toBe('all_reserved')
+            expect(cg.availableSitesCount).toBe(0)
+            expect(cg.lastPolledAt).not.toBeNull()
+        })
+
+        test('report() advances campground state to available with site URLs when sites open', () => {
+            const campgrounds = [{ name: 'Upper Pines', id: 232447, park: 'Yosemite' }]
+            const checker = new Checker(campgrounds, TARGET_DATE, WEBHOOK, MONTH_START)
+            const mockCampground = {
+                id: 232447,
+                toString: () => '[Yosemite][Upper Pines]',
+                getBookingUrl: () => 'https://example.test/cg/232447',
+            }
+            const notifyCalls = []
+            checker.notifier.notify = (m) => notifyCalls.push(m)
+
+            checker.report(mockCampground, {
+                data: {
+                    campsites: {
+                        '1': { site: '044', campsite_id: 'c100', availabilities: { [TARGET_DATE]: 'Available' } },
+                    },
+                },
+            })
+
+            const cg = checker.getStatus().campgrounds[0]
+            expect(cg.status).toBe('available')
+            expect(cg.availableSitesCount).toBe(1)
+            expect(cg.availableSites[0].url).toBe('https://www.recreation.gov/camping/campsites/c100')
+            expect(notifyCalls).toHaveLength(1)
+        })
+
+        test('__handleError marks the campground as error with the failure reason', () => {
+            const campgrounds = [{ name: 'Upper Pines', id: 232447, park: 'Yosemite' }]
+            const checker = new Checker(campgrounds, TARGET_DATE, WEBHOOK, MONTH_START)
+            const err = { response: { status: 429, headers: { 'retry-after': '30' } } }
+            const fakeCampground = { id: 232447, toString: () => '[Yosemite][Upper Pines]' }
+
+            checker.__handleError(err, fakeCampground)
+
+            const cg = checker.getStatus().campgrounds[0]
+            expect(cg.status).toBe('error')
+            expect(cg.error).toBe('Retry-After:30')
+        })
+    })
+
     test('__resetBackoff zeroes out state', () => {
         const checker = new Checker([], TARGET_DATE, WEBHOOK, MONTH_START)
         checker.backoffMs = 5000

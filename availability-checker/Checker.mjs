@@ -35,18 +35,55 @@ class Checker {
         this.monthStart = monthStart
         this.notifier = new Notifier(discordWebhookURL)
         this.campgrounds = campgrounds
+
+        // Status tracking for the /api/status endpoint.
+        this.cycleState = {
+            lastStartedAt: null,
+            lastFinishedAt: null,
+            currentlyRunning: false,
+            cycleCount: 0,
+        }
+        this.campgroundState = new Map()
+        for (const cg of campgrounds) {
+            this.campgroundState.set(cg.id, {
+                id: cg.id,
+                name: cg.name,
+                park: cg.park || '',
+                lastPolledAt: null,
+                status: 'pending',
+                availableSitesCount: 0,
+                availableSites: [],
+                error: null,
+            })
+        }
     }
 
     async executeCheck() {
+        this.cycleState.currentlyRunning = true
+        this.cycleState.lastStartedAt = new Date().toISOString()
         for (const campground of this.campgrounds) {
             await this.__sleep(INTER_CAMPGROUND_SLEEP_MS)
             await this.checkCampground(campground)
         }
+        this.cycleState.lastFinishedAt = new Date().toISOString()
+        this.cycleState.currentlyRunning = false
+        this.cycleState.cycleCount += 1
         logger.info("Done!")
     }
 
     getBackoffMs() {
         return this.backoffMs
+    }
+
+    getStatus() {
+        return {
+            targetDate: this.targetDate,
+            monthStart: this.monthStart,
+            backoffMs: this.backoffMs,
+            lastErrorReason: this.lastErrorReason,
+            cycle: { ...this.cycleState },
+            campgrounds: this.campgrounds.map(cg => this.campgroundState.get(cg.id)),
+        }
     }
 
     __sleep(ms) {
@@ -101,11 +138,23 @@ class Checker {
             return isAvailable;
         })
 
+        const state = this.campgroundState.get(campground.id)
+        state.lastPolledAt = new Date().toISOString()
+        state.availableSitesCount = availableSites.length
+        state.availableSites = availableSites.map(s => ({
+            siteNO: s.siteNO,
+            campsiteId: s.campsiteId,
+            url: Campground.getCampsiteUrl(s.campsiteId),
+        }))
+        state.error = null
+
         if (availableSites.length > 0) {
+            state.status = 'available'
             const message = this.formatAvailabilityMessage(campground, availableSites, this.targetDate)
             logger.info(message)
             this.notifier.notify(message)
         } else {
+            state.status = 'all_reserved'
             logger.info(`${campground.toString()} ALL RESERVED`)
         }
     }
@@ -142,6 +191,14 @@ class Checker {
         }
 
         this.backoffMs = nextBackoff
+
+        const state = this.campgroundState.get(campground.id)
+        if (state) {
+            state.lastPolledAt = new Date().toISOString()
+            state.status = 'error'
+            state.error = this.lastErrorReason
+        }
+
         logger.error(
             `Error checking ${campground.toString()}: ${this.lastErrorReason}. ` +
             `Next backoff: ${this.backoffMs}ms`
