@@ -77,6 +77,7 @@ class Checker {
             return { ran: false, reason: 'already_running' }
         }
         this.cycleState.currentlyRunning = true
+        this.cycleHalt = false
         const startedAtIso = new Date().toISOString()
         this.cycleState.lastStartedAt = startedAtIso
         const cycleId = this.repos.cycles.start(startedAtIso)
@@ -89,6 +90,12 @@ class Checker {
                 await this.__sleep(INTER_CAMPGROUND_SLEEP_MS)
                 await this.checkCampground(campground, cycleId)
                 polledCount += 1
+                if (this.cycleHalt) {
+                    // A rate-limit signal flipped this on. Stop the cycle so the
+                    // remaining campgrounds don't pile more requests onto a hot IP.
+                    logger.info(`Cycle ${cycleId} halted after ${polledCount} campground(s): ${this.lastErrorReason}`)
+                    break
+                }
             }
         } finally {
             const finishedAtIso = new Date().toISOString()
@@ -309,15 +316,18 @@ class Checker {
         const retryAfterRaw = err.response?.headers?.['retry-after']
 
         let nextBackoff
+        let isRetryable
         if (retryAfterRaw) {
             const retryAfterSec = Number.parseInt(retryAfterRaw, 10)
             nextBackoff = Number.isFinite(retryAfterSec)
                 ? retryAfterSec * 1000
                 : Math.min((this.backoffMs || 1000) * 2, MAX_BACKOFF_MS)
             this.lastErrorReason = `Retry-After:${retryAfterRaw}`
+            isRetryable = true
         } else if (status === 429 || (status >= 500 && status < 600)) {
             nextBackoff = Math.min((this.backoffMs || 1000) * 2, MAX_BACKOFF_MS)
             this.lastErrorReason = `HTTP ${status}`
+            isRetryable = true
         } else if (
             err.code === 'ECONNRESET' ||
             err.code === 'ETIMEDOUT' ||
@@ -325,12 +335,17 @@ class Checker {
         ) {
             nextBackoff = Math.min((this.backoffMs || 1000) * 2, MAX_BACKOFF_MS)
             this.lastErrorReason = `Network ${err.code}`
+            isRetryable = true
         } else {
             nextBackoff = this.backoffMs
             this.lastErrorReason = err.message
+            isRetryable = false
         }
 
         this.backoffMs = nextBackoff
+        // Halt the cycle on rate-limit / network class errors. Other errors
+        // (parsing, etc.) are per-campground problems — keep going.
+        if (isRetryable) this.cycleHalt = true
 
         const state = this.campgroundState.get(campground.id)
         if (state) {

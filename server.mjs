@@ -106,9 +106,10 @@ const jitter = () => Math.floor(Math.random() * 10_000)
 
 const scheduleNextCheck = (checker, baseIntervalMs) => {
     const backoff = checker.getBackoffMs()
-    const delay = backoff > 0
-        ? backoff + jitter()
-        : baseIntervalMs + jitter()
+    // Backoff is a *floor*, not a replacement: a 2s backoff must never shorten
+    // the normal poll interval, or we'd retry 30× faster than steady state and
+    // keep AWS WAF's 5-min window saturated. See TODOS / rate-limit notes.
+    const delay = Math.max(backoff, baseIntervalMs) + jitter()
 
     if (backoff > 0) {
         logger.info(`Backing off for ${delay}ms before next cycle`)

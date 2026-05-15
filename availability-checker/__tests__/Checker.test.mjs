@@ -165,6 +165,54 @@ describe('Checker', () => {
         expect(checker.getBackoffMs()).toBe(30 * 1000)
     })
 
+    test('__handleError sets cycleHalt on retry-class errors but not on others', () => {
+        const { checker } = mkChecker()
+        const fake = { id: 1, toString: () => '[fake]' }
+
+        checker.cycleHalt = false
+        checker.__handleError({ response: { status: 429, headers: {} } }, fake, null)
+        expect(checker.cycleHalt).toBe(true)
+
+        checker.cycleHalt = false
+        checker.__handleError({ response: { status: 503, headers: {} } }, fake, null)
+        expect(checker.cycleHalt).toBe(true)
+
+        checker.cycleHalt = false
+        checker.__handleError({ code: 'ECONNRESET' }, fake, null)
+        expect(checker.cycleHalt).toBe(true)
+
+        checker.cycleHalt = false
+        checker.__handleError({ message: 'Unexpected token in JSON' }, fake, null)
+        expect(checker.cycleHalt).toBe(false)
+    })
+
+    test('executeCheck stops polling further campgrounds once cycleHalt fires', async () => {
+        const { checker, repos } = mkChecker([
+            { name: 'A', id: 1, park: 'Y' },
+            { name: 'B', id: 2, park: 'Y' },
+            { name: 'C', id: 3, park: 'Y' },
+        ])
+        const calls = []
+        checker.checkCampground = async (cg) => {
+            calls.push(cg.id)
+            // First campground throws a 429 — must halt the cycle before B and C.
+            if (cg.id === 1) {
+                checker.__handleError(
+                    { response: { status: 429, headers: {} } },
+                    { id: cg.id, toString: () => `[${cg.name}]` },
+                    null,
+                )
+            }
+        }
+        // Bypass the 2s INTER_CAMPGROUND_SLEEP_MS to keep the test fast.
+        checker.__sleep = () => Promise.resolve()
+
+        const result = await checker.executeCheck()
+        expect(result.ran).toBe(true)
+        expect(calls).toEqual([1])
+        expect(checker.cycleHalt).toBe(true)
+    })
+
     describe('getStatus', () => {
         test('returns campground rows from the DB with default state', () => {
             const { checker } = mkChecker([
