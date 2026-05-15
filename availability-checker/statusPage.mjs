@@ -210,9 +210,13 @@ const render = () => {
     ? data.targetDates[0]
     : \`\${data.targetDates.length} dates (\${fmtDateShort(data.targetDates[0])} → \${fmtDateShort(data.targetDates[data.targetDates.length - 1])})\`
 
+  const monthsLabel = data.monthStarts.length === 1
+    ? data.monthStarts[0].slice(0, 7)
+    : \`\${data.monthStarts.length} months (\${data.monthStarts[0].slice(0, 7)} → \${data.monthStarts[data.monthStarts.length - 1].slice(0, 7)})\`
+
   document.getElementById('meta').innerHTML =
+    \`<span>MONTHS: \${escape(monthsLabel)}</span>\` +
     \`<span>TARGET_DATES: \${escape(datesLabel)}</span>\` +
-    \`<span>MONTH_START: \${escape(data.monthStart)}</span>\` +
     \`<span>\${escape(cycleInfo)}</span>\` +
     \` \${backoffPill}\`
 

@@ -17,6 +17,7 @@ const USER_AGENT =
     '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 const INTER_CAMPGROUND_SLEEP_MS = 2000
+const INTER_MONTH_SLEEP_MS = 500
 const MAX_BACKOFF_MS = 10 * 60 * 1000
 
 class Checker {
@@ -25,15 +26,15 @@ class Checker {
     backoffMs = 0
     lastErrorReason = null
 
-    constructor(campgrounds, targetDates, discordWebhookURL, monthStart) {
-        if (!monthStart) {
-            throw new Error('Checker: monthStart is required')
+    constructor(campgrounds, targetDates, discordWebhookURL, monthStarts) {
+        if (!Array.isArray(monthStarts) || monthStarts.length === 0) {
+            throw new Error('Checker: monthStarts must be a non-empty array')
         }
         if (!Array.isArray(targetDates) || targetDates.length === 0) {
             throw new Error('Checker: targetDates must be a non-empty array')
         }
         this.targetDates = targetDates
-        this.monthStart = monthStart
+        this.monthStarts = monthStarts
         this.notifier = new Notifier(discordWebhookURL)
         this.campgrounds = campgrounds
 
@@ -92,7 +93,7 @@ class Checker {
     getStatus() {
         return {
             targetDates: this.targetDates,
-            monthStart: this.monthStart,
+            monthStarts: this.monthStarts,
             backoffMs: this.backoffMs,
             lastErrorReason: this.lastErrorReason,
             cycle: { ...this.cycleState },
@@ -105,9 +106,27 @@ class Checker {
     }
 
     /**
-     * For each site in the API response, return the set of target dates on which
-     * it is available, plus the static site detail (loop, campsite_type,
-     * max_num_people) that's worth showing in the UI / Discord message.
+     * Merge the campsites payload from one month into the running combined
+     * payload. Same campsite_id key across months yields one entry whose
+     * `availabilities` map is the union of both months.
+     */
+    __mergeCampsites(combined, monthCampsites) {
+        for (const [key, siteData] of Object.entries(monthCampsites || {})) {
+            if (combined[key]) {
+                combined[key].availabilities = {
+                    ...combined[key].availabilities,
+                    ...siteData.availabilities,
+                }
+            } else {
+                combined[key] = { ...siteData }
+            }
+        }
+    }
+
+    /**
+     * For each site in the (possibly multi-month-merged) API response, return
+     * the set of target dates on which it is available, plus static site
+     * detail (loop, campsite_type, max_num_people).
      */
     __getSiteAvailabilities = (json) => {
         const sites = json.campsites;
@@ -130,13 +149,12 @@ class Checker {
     /**
      * Pure formatter: takes a campground + a list of {site, availableDates}
      * records and produces a Discord-friendly message with booking links,
-     * grouped by date so the reader can see at a glance which night opens up.
+     * grouped by date so the reader can see which night opens up.
      */
     formatAvailabilityMessage(campground, availableSites) {
         const header = `${campground.toString()} ${availableSites.length} site(s) available`
         const bookingLink = `Book: ${campground.getBookingUrl()}`
 
-        // Group by date
         const byDate = new Map()
         for (const site of availableSites) {
             for (const date of site.availableDates) {
@@ -170,7 +188,6 @@ class Checker {
             .filter((s) => s.availableDates.length > 0)
             .filter((s) => !_.includes(excludedSites, s.siteNO))
 
-        // Per-date counts (across all sites)
         const availableByDate = {}
         for (const date of this.targetDates) {
             availableByDate[date] = availableSites.filter(s => s.availableDates.includes(date)).length
@@ -257,14 +274,20 @@ class Checker {
 
     async checkCampground(campgroundJson) {
         const campground = this.__createCampground(campgroundJson)
-        const url = campground.getAvailabilityUrl(this.monthStart)
+        const combined = {}
 
         try {
-            const res = await axios.get(url, {
-                headers: { 'User-Agent': USER_AGENT },
-                timeout: 15000,
-            })
-            this.report(campground, res, { excludedSites: this.excludedSites })
+            for (let i = 0; i < this.monthStarts.length; i++) {
+                if (i > 0) await this.__sleep(INTER_MONTH_SLEEP_MS)
+                const monthStart = this.monthStarts[i]
+                const url = campground.getAvailabilityUrl(monthStart)
+                const res = await axios.get(url, {
+                    headers: { 'User-Agent': USER_AGENT },
+                    timeout: 15000,
+                })
+                this.__mergeCampsites(combined, res.data?.campsites)
+            }
+            this.report(campground, { data: { campsites: combined } }, { excludedSites: this.excludedSites })
             this.__resetBackoff()
         } catch (err) {
             this.__handleError(err, campground)

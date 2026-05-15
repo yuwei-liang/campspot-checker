@@ -6,8 +6,9 @@ Polls recreation.gov for campsite availability and pings a Discord channel when 
 
 1. `cp .env.example .env` and fill in:
    - `WEBHOOK_URL` — your Discord webhook URL
-   - `MONTH_START` — first of the month you're monitoring, e.g. `2026-06-01T00:00:00.000Z` (matches what recreation.gov's API expects)
-   - `TARGET_WEEKDAYS` — comma-separated weekday names to monitor, e.g. `Thu,Fri,Sat`. Expands to every matching night inside `MONTH_START` (preferred for monitoring a recurring weekend pattern).
+   - `MONTH_START` — first of the first month you're monitoring, e.g. `2026-06-01T00:00:00.000Z` (matches what recreation.gov's API expects)
+   - `MONTHS_TO_SCAN` — optional, 1..12. How many consecutive months to scan from `MONTH_START`. Each campground gets one API request per month per cycle.
+   - `TARGET_WEEKDAYS` — comma-separated weekday names to monitor, e.g. `Thu,Fri,Sat`. Expands to every matching night across all scanned months.
    - `TARGET_DATE` — optional single-date fallback when `TARGET_WEEKDAYS` is unset, e.g. `2026-06-27T00:00:00Z`.
    - `POLL_INTERVAL_MS` — optional, defaults to `90000` (90s). Don't drop below `1000`.
 2. `npm install`

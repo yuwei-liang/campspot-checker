@@ -1,7 +1,8 @@
 import {
     loadConfig,
     parseWeekdays,
-    expandWeekdaysInMonth,
+    generateMonthStarts,
+    expandWeekdaysAcrossMonths,
     weekdayLabel,
 } from '../configLoader.mjs'
 
@@ -22,35 +23,52 @@ describe('parseWeekdays', () => {
     })
 })
 
-describe('expandWeekdaysInMonth', () => {
-    test('lists every Thu/Fri/Sat in June 2026', () => {
-        const dates = expandWeekdaysInMonth('2026-06-01T00:00:00.000Z', [4, 5, 6])
-        // June 2026: 1=Mon, so Thursdays are 4,11,18,25; Fridays 5,12,19,26; Saturdays 6,13,20,27
-        expect(dates).toEqual([
-            '2026-06-04T00:00:00Z',
-            '2026-06-05T00:00:00Z',
-            '2026-06-06T00:00:00Z',
-            '2026-06-11T00:00:00Z',
-            '2026-06-12T00:00:00Z',
-            '2026-06-13T00:00:00Z',
-            '2026-06-18T00:00:00Z',
-            '2026-06-19T00:00:00Z',
-            '2026-06-20T00:00:00Z',
-            '2026-06-25T00:00:00Z',
-            '2026-06-26T00:00:00Z',
-            '2026-06-27T00:00:00Z',
+describe('generateMonthStarts', () => {
+    test('returns N consecutive months starting from given date', () => {
+        const months = generateMonthStarts('2026-06-01T00:00:00.000Z', 4)
+        expect(months).toEqual([
+            '2026-06-01T00:00:00.000Z',
+            '2026-07-01T00:00:00.000Z',
+            '2026-08-01T00:00:00.000Z',
+            '2026-09-01T00:00:00.000Z',
         ])
     })
 
-    test('handles months with 30 vs 31 days correctly', () => {
-        // February 2026 has 28 days
-        const dates = expandWeekdaysInMonth('2026-02-01T00:00:00.000Z', [0])
-        expect(dates).toEqual([
-            '2026-02-01T00:00:00Z',
-            '2026-02-08T00:00:00Z',
-            '2026-02-15T00:00:00Z',
-            '2026-02-22T00:00:00Z',
+    test('rolls over year boundary correctly', () => {
+        const months = generateMonthStarts('2026-11-01T00:00:00.000Z', 3)
+        expect(months).toEqual([
+            '2026-11-01T00:00:00.000Z',
+            '2026-12-01T00:00:00.000Z',
+            '2027-01-01T00:00:00.000Z',
         ])
+    })
+
+    test('count of 1 returns just the input month', () => {
+        const months = generateMonthStarts('2026-06-01T00:00:00.000Z', 1)
+        expect(months).toEqual(['2026-06-01T00:00:00.000Z'])
+    })
+
+    test('rejects count outside 1..12', () => {
+        expect(() => generateMonthStarts('2026-06-01T00:00:00.000Z', 0)).toThrow(/MONTHS_TO_SCAN/)
+        expect(() => generateMonthStarts('2026-06-01T00:00:00.000Z', 13)).toThrow(/MONTHS_TO_SCAN/)
+    })
+})
+
+describe('expandWeekdaysAcrossMonths', () => {
+    test('expands Thu/Fri/Sat across June+July 2026', () => {
+        const months = generateMonthStarts('2026-06-01T00:00:00.000Z', 2)
+        const dates = expandWeekdaysAcrossMonths(months, [4, 5, 6])
+        // June: 12 dates, July: 13 dates (Thu 7/2, 7/9, 7/16, 7/23, 7/30; Fri 7/3, 7/10, 7/17, 7/24, 7/31; Sat 7/4, 7/11, 7/18, 7/25)
+        expect(dates.length).toBeGreaterThan(20)
+        expect(dates[0]).toBe('2026-06-04T00:00:00Z')
+        expect(dates.includes('2026-07-04T00:00:00Z')).toBe(true)
+        expect(dates[dates.length - 1].startsWith('2026-07-')).toBe(true)
+    })
+
+    test('handles a single month identically to expandWeekdaysInMonth', () => {
+        const dates = expandWeekdaysAcrossMonths(['2026-06-01T00:00:00.000Z'], [4, 5, 6])
+        expect(dates).toHaveLength(12)
+        expect(dates[0]).toBe('2026-06-04T00:00:00Z')
     })
 })
 
@@ -62,10 +80,33 @@ describe('weekdayLabel', () => {
 })
 
 describe('loadConfig', () => {
-    test('expands TARGET_WEEKDAYS in the configured month', () => {
-        const cfg = loadConfig({ ...baseEnv(), TARGET_WEEKDAYS: 'Fri,Sat' })
-        expect(cfg.targetDates.length).toBe(8) // 4 Fridays + 4 Saturdays in June 2026
-        expect(cfg.targetDates[0]).toBe('2026-06-05T00:00:00Z')
+    test('defaults MONTHS_TO_SCAN to 1', () => {
+        const cfg = loadConfig({ ...baseEnv(), TARGET_DATE: '2026-06-27T00:00:00Z' })
+        expect(cfg.monthStarts).toEqual(['2026-06-01T00:00:00.000Z'])
+    })
+
+    test('expands MONTHS_TO_SCAN=4 to four consecutive months', () => {
+        const cfg = loadConfig({
+            ...baseEnv(),
+            MONTHS_TO_SCAN: '4',
+            TARGET_WEEKDAYS: 'Fri,Sat',
+        })
+        expect(cfg.monthStarts).toEqual([
+            '2026-06-01T00:00:00.000Z',
+            '2026-07-01T00:00:00.000Z',
+            '2026-08-01T00:00:00.000Z',
+            '2026-09-01T00:00:00.000Z',
+        ])
+    })
+
+    test('expands TARGET_WEEKDAYS across all months in scan', () => {
+        const cfg = loadConfig({
+            ...baseEnv(),
+            MONTHS_TO_SCAN: '4',
+            TARGET_WEEKDAYS: 'Sat',
+        })
+        // Saturdays in Jun(4) + Jul(4) + Aug(5) + Sep(4) 2026 = 17
+        expect(cfg.targetDates.length).toBe(17)
     })
 
     test('falls back to TARGET_DATE when TARGET_WEEKDAYS not set', () => {
@@ -77,14 +118,12 @@ describe('loadConfig', () => {
         expect(() => loadConfig(baseEnv())).toThrow(/TARGET_WEEKDAYS.*TARGET_DATE/)
     })
 
-    test('throws when TARGET_WEEKDAYS produces zero matching dates', () => {
-        // No February 30th
+    test('throws on invalid MONTHS_TO_SCAN', () => {
         expect(() => loadConfig({
             ...baseEnv(),
-            MONTH_START: '2026-02-01T00:00:00.000Z',
-            TARGET_WEEKDAYS: 'Sun',
-            // Sundays in Feb 2026: 1, 8, 15, 22. So this WOULD match. Use a date pattern that doesn't.
-        })).not.toThrow()
+            MONTHS_TO_SCAN: 'forever',
+            TARGET_WEEKDAYS: 'Sat',
+        })).toThrow(/MONTHS_TO_SCAN/)
     })
 
     test('defaults POLL_INTERVAL_MS to 90000', () => {

@@ -54,17 +54,18 @@ const fixture = () => ({
 })
 
 describe('Checker', () => {
-    test('constructor requires monthStart', () => {
-        expect(() => new Checker([], TARGET_DATES, WEBHOOK)).toThrow(/monthStart/)
+    test('constructor requires monthStarts non-empty array', () => {
+        expect(() => new Checker([], TARGET_DATES, WEBHOOK)).toThrow(/monthStarts/)
+        expect(() => new Checker([], TARGET_DATES, WEBHOOK, [])).toThrow(/monthStarts/)
     })
 
     test('constructor requires targetDates non-empty array', () => {
-        expect(() => new Checker([], [], WEBHOOK, MONTH_START)).toThrow(/targetDates/)
-        expect(() => new Checker([], undefined, WEBHOOK, MONTH_START)).toThrow(/targetDates/)
+        expect(() => new Checker([], [], WEBHOOK, [MONTH_START])).toThrow(/targetDates/)
+        expect(() => new Checker([], undefined, WEBHOOK, [MONTH_START])).toThrow(/targetDates/)
     })
 
     test('__getSiteAvailabilities classifies sites by UNAVAILABLE_STATUSES per date', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         const result = checker.__getSiteAvailabilities(fixture())
 
         const byNo = Object.fromEntries(result.map(r => [r.siteNO, r]))
@@ -76,7 +77,7 @@ describe('Checker', () => {
     })
 
     test('__getSiteAvailabilities captures loop / campsite_type / max_num_people', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         const result = checker.__getSiteAvailabilities(fixture())
         const site100 = result.find(s => s.siteNO === '100')
         expect(site100.loop).toBe('Loop A')
@@ -85,7 +86,7 @@ describe('Checker', () => {
     })
 
     test('__getSiteAvailabilities returns null for missing detail fields', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         const result = checker.__getSiteAvailabilities(fixture())
         const site102 = result.find(s => s.siteNO === '102')
         expect(site102.loop).toBeNull()
@@ -93,9 +94,35 @@ describe('Checker', () => {
         expect(site102.maxPeople).toBeNull()
     })
 
+    test('__mergeCampsites unions availabilities across months for the same campsite_id', () => {
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, ['2026-06-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'])
+        const combined = {}
+        checker.__mergeCampsites(combined, {
+            '1': {
+                site: 'A1', campsite_id: 'c1',
+                availabilities: { '2026-06-26T00:00:00Z': 'Available' },
+            },
+        })
+        checker.__mergeCampsites(combined, {
+            '1': {
+                site: 'A1', campsite_id: 'c1',
+                availabilities: { '2026-07-04T00:00:00Z': 'Available' },
+            },
+            '2': {
+                site: 'B2', campsite_id: 'c2',
+                availabilities: { '2026-07-04T00:00:00Z': 'Reserved' },
+            },
+        })
+        expect(combined['1'].availabilities).toEqual({
+            '2026-06-26T00:00:00Z': 'Available',
+            '2026-07-04T00:00:00Z': 'Available',
+        })
+        expect(combined['2']).toBeDefined()
+    })
+
     test('multi-date: a site available on one date but reserved another reports only the open date', () => {
         const dates = ['2026-06-26T00:00:00Z', '2026-06-27T00:00:00Z']
-        const checker = new Checker([], dates, WEBHOOK, MONTH_START)
+        const checker = new Checker([], dates, WEBHOOK, [MONTH_START])
         const json = {
             campsites: {
                 '1': {
@@ -113,12 +140,12 @@ describe('Checker', () => {
     })
 
     test('backoff starts at 0', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         expect(checker.getBackoffMs()).toBe(0)
     })
 
     test('executeCheck refuses to start a second cycle while one is running', async () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         checker.cycleState.currentlyRunning = true
         const result = await checker.executeCheck()
         expect(result).toEqual({ ran: false, reason: 'already_running' })
@@ -126,7 +153,7 @@ describe('Checker', () => {
     })
 
     test('executeCheck reports ran:true on a clean cycle and increments cycleCount', async () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         const result = await checker.executeCheck()
         expect(result).toEqual({ ran: true })
         expect(checker.cycleState.cycleCount).toBe(1)
@@ -134,7 +161,7 @@ describe('Checker', () => {
     })
 
     test('__handleError grows backoff exponentially on 429', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         const fakeCampground = { toString: () => '[fake]' }
         const err = { response: { status: 429, headers: {} } }
 
@@ -148,7 +175,7 @@ describe('Checker', () => {
     })
 
     test('__handleError honors Retry-After header (in seconds)', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         const err = { response: { status: 429, headers: { 'retry-after': '30' } } }
         checker.__handleError(err, { toString: () => '[fake]' })
         expect(checker.getBackoffMs()).toBe(30 * 1000)
@@ -160,11 +187,11 @@ describe('Checker', () => {
                 { name: 'Upper Pines', id: 232447, park: 'Yosemite' },
                 { name: 'Lower Pines', id: 232450, park: 'Yosemite' },
             ]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, MONTH_START)
+            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
             const status = checker.getStatus()
 
             expect(status.targetDates).toEqual(TARGET_DATES)
-            expect(status.monthStart).toBe(MONTH_START)
+            expect(status.monthStarts).toEqual([MONTH_START])
             expect(status.backoffMs).toBe(0)
             expect(status.cycle.cycleCount).toBe(0)
             expect(status.campgrounds).toHaveLength(2)
@@ -184,7 +211,7 @@ describe('Checker', () => {
                 totalSites: 238,
                 accessType: 'drive-in',
             }]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, MONTH_START)
+            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
             const cg = checker.getStatus().campgrounds[0]
             expect(cg.meta).toEqual({
                 valleyDriveMinutes: 0,
@@ -197,7 +224,7 @@ describe('Checker', () => {
 
         test('campground metadata defaults to nulls when omitted', () => {
             const campgrounds = [{ name: 'X', id: 1, park: 'Y' }]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, MONTH_START)
+            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
             const cg = checker.getStatus().campgrounds[0]
             expect(cg.meta).toEqual({
                 valleyDriveMinutes: null,
@@ -210,7 +237,7 @@ describe('Checker', () => {
 
         test('report() advances state to all_reserved with zero counts when no sites open', () => {
             const campgrounds = [{ name: 'Upper Pines', id: 232447, park: 'Yosemite' }]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, MONTH_START)
+            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
             const mockCampground = {
                 id: 232447,
                 toString: () => '[Yosemite][Upper Pines]',
@@ -231,7 +258,7 @@ describe('Checker', () => {
         test('report() carries site detail and per-date counts when sites open', () => {
             const dates = ['2026-06-26T00:00:00Z', '2026-06-27T00:00:00Z']
             const campgrounds = [{ name: 'Atwell', id: 10044710, park: 'Sequoia' }]
-            const checker = new Checker(campgrounds, dates, WEBHOOK, MONTH_START)
+            const checker = new Checker(campgrounds, dates, WEBHOOK, [MONTH_START])
             const mockCampground = {
                 id: 10044710,
                 toString: () => '[Sequoia][Atwell]',
@@ -288,7 +315,7 @@ describe('Checker', () => {
 
         test('__handleError marks the campground as error with the failure reason', () => {
             const campgrounds = [{ name: 'Upper Pines', id: 232447, park: 'Yosemite' }]
-            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, MONTH_START)
+            const checker = new Checker(campgrounds, TARGET_DATES, WEBHOOK, [MONTH_START])
             const err = { response: { status: 429, headers: { 'retry-after': '30' } } }
             const fakeCampground = { id: 232447, toString: () => '[Yosemite][Upper Pines]' }
 
@@ -301,7 +328,7 @@ describe('Checker', () => {
     })
 
     test('__resetBackoff zeroes out state', () => {
-        const checker = new Checker([], TARGET_DATES, WEBHOOK, MONTH_START)
+        const checker = new Checker([], TARGET_DATES, WEBHOOK, [MONTH_START])
         checker.backoffMs = 5000
         checker.lastErrorReason = 'HTTP 429'
         checker.__resetBackoff()

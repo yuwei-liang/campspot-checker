@@ -3,6 +3,8 @@ const REQUIRED = ['WEBHOOK_URL', 'MONTH_START']
 const WEEKDAY_MAP = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 }
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
+const MAX_MONTHS = 12
+
 /**
  * Parse "Thu,Fri,Sat" -> [4, 5, 6]. Throws on unknown tokens.
  */
@@ -24,24 +26,50 @@ const formatApiDate = (d) => {
     return `${y}-${m}-${day}T00:00:00Z`
 }
 
+const formatMonthStart = (d) => {
+    const y = d.getUTCFullYear()
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+    return `${y}-${m}-01T00:00:00.000Z`
+}
+
 /**
- * Given a MONTH_START ISO string and a list of weekday indices [0-6],
- * return all ISO dates within that calendar month (UTC) that fall on
- * those weekdays. Returns dates in chronological order.
+ * Given an initial MONTH_START and a count N, return N month-start ISO strings
+ * starting from MONTH_START and stepping forward by calendar months.
  */
-export const expandWeekdaysInMonth = (monthStart, weekdays) => {
+export const generateMonthStarts = (monthStart, count) => {
     const start = new Date(monthStart)
     if (Number.isNaN(start.getTime())) {
         throw new Error(`Invalid MONTH_START: ${monthStart}`)
     }
-    const year = start.getUTCFullYear()
-    const month = start.getUTCMonth()
+    if (!Number.isInteger(count) || count < 1 || count > MAX_MONTHS) {
+        throw new Error(`MONTHS_TO_SCAN must be an integer between 1 and ${MAX_MONTHS} (got ${count})`)
+    }
     const result = []
-    for (let day = 1; day <= 31; day++) {
-        const d = new Date(Date.UTC(year, month, day))
-        if (d.getUTCMonth() !== month) break
-        if (weekdays.includes(d.getUTCDay())) {
-            result.push(formatApiDate(d))
+    const baseYear = start.getUTCFullYear()
+    const baseMonth = start.getUTCMonth()
+    for (let i = 0; i < count; i++) {
+        result.push(formatMonthStart(new Date(Date.UTC(baseYear, baseMonth + i, 1))))
+    }
+    return result
+}
+
+/**
+ * Given a list of month-start ISO strings and a list of weekday indices [0-6],
+ * return every UTC date that falls on one of those weekdays inside any of
+ * those calendar months, in chronological order.
+ */
+export const expandWeekdaysAcrossMonths = (monthStarts, weekdays) => {
+    const result = []
+    for (const monthStart of monthStarts) {
+        const start = new Date(monthStart)
+        const year = start.getUTCFullYear()
+        const month = start.getUTCMonth()
+        for (let day = 1; day <= 31; day++) {
+            const d = new Date(Date.UTC(year, month, day))
+            if (d.getUTCMonth() !== month) break
+            if (weekdays.includes(d.getUTCDay())) {
+                result.push(formatApiDate(d))
+            }
         }
     }
     return result
@@ -61,16 +89,22 @@ export const loadConfig = (env = process.env) => {
         )
     }
 
+    const monthsToScan = Number.parseInt(env.MONTHS_TO_SCAN || '1', 10)
+    if (!Number.isFinite(monthsToScan) || monthsToScan < 1 || monthsToScan > MAX_MONTHS) {
+        throw new Error(
+            `MONTHS_TO_SCAN must be an integer between 1 and ${MAX_MONTHS} (got ${env.MONTHS_TO_SCAN})`
+        )
+    }
+    const monthStarts = generateMonthStarts(env.MONTH_START, monthsToScan)
+
     // Date selection: prefer TARGET_WEEKDAYS (multi-date) over TARGET_DATE (single).
-    // Must have at least one.
     let targetDates
     if (env.TARGET_WEEKDAYS) {
         const weekdays = parseWeekdays(env.TARGET_WEEKDAYS)
-        targetDates = expandWeekdaysInMonth(env.MONTH_START, weekdays)
+        targetDates = expandWeekdaysAcrossMonths(monthStarts, weekdays)
         if (targetDates.length === 0) {
             throw new Error(
-                `TARGET_WEEKDAYS=${env.TARGET_WEEKDAYS} produced 0 dates in MONTH_START=${env.MONTH_START}. ` +
-                `Check that the month spans the weekdays you want.`
+                `TARGET_WEEKDAYS=${env.TARGET_WEEKDAYS} produced 0 dates across the ${monthsToScan} month(s) starting from ${env.MONTH_START}.`
             )
         }
     } else if (env.TARGET_DATE) {
@@ -91,7 +125,7 @@ export const loadConfig = (env = process.env) => {
 
     return {
         webhookUrl: env.WEBHOOK_URL,
-        monthStart: env.MONTH_START,
+        monthStarts,
         targetDates,
         pollIntervalMs,
     }
