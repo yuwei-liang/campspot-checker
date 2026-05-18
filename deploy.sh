@@ -51,7 +51,7 @@ npm test --silent
 
 # ----- Gate 3: confirm against deployed SHA -----
 step "Comparing against currently-deployed image"
-DEPLOYED_SHA="$(ssh "$NAS" "sudo -n $DOCKER inspect --format '{{ index .Config.Labels \"org.opencontainers.image.revision\" }}' campspot-checker 2>/dev/null" | tr -d '[:space:]' || true)"
+DEPLOYED_SHA="$(ssh -n "$NAS" "sudo -n $DOCKER inspect --format '{{ index .Config.Labels \"org.opencontainers.image.revision\" }}' campspot-checker 2>/dev/null" | tr -d '[:space:]' || true)"
 
 if [[ -z "$DEPLOYED_SHA" || "$DEPLOYED_SHA" == "<no value>" ]]; then
     echo "(no prior revision label on NAS — first deploy with this script)"
