@@ -125,6 +125,7 @@ export const loadConfig = (env = process.env) => {
 
     return {
         webhookUrl: env.WEBHOOK_URL,
+        ntfyTopicURL: env.NTFY_TOPIC_URL || null,
         monthStarts,
         targetDates,
         pollIntervalMs,

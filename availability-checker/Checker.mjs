@@ -28,7 +28,7 @@ class Checker {
     /**
      * @param {object} repos { campgrounds, cycles, availability }
      */
-    constructor(repos, targetDates, discordWebhookURL, monthStarts) {
+    constructor(repos, targetDates, discordWebhookURL, monthStarts, ntfyTopicURL = null) {
         if (!Array.isArray(monthStarts) || monthStarts.length === 0) {
             throw new Error('Checker: monthStarts must be a non-empty array')
         }
@@ -38,7 +38,7 @@ class Checker {
         this.repos = repos
         this.targetDates = targetDates
         this.monthStarts = monthStarts
-        this.notifier = new Notifier(discordWebhookURL)
+        this.notifier = new Notifier(discordWebhookURL, ntfyTopicURL)
 
         this.cycleState = {
             lastStartedAt: null,
@@ -210,9 +210,26 @@ class Checker {
         })
     }
 
+    // Tap-action payload for ntfy: opening the push notification on a phone
+    // jumps straight to the rec.gov campground page (earliest open date) with
+    // dates pre-filled. Up to 3 per-site shortcut buttons cap out at ntfy's
+    // action-button limit.
+    __buildNotifyOptions(campground, newlyOpened) {
+        const sorted = [...newlyOpened].sort((a, b) => a.targetDate.localeCompare(b.targetDate))
+        const earliest = sorted[0]
+        const title = `${campground.name || 'New opening'}: ${newlyOpened.length} site(s)`
+        const clickUrl = campground.getBookingUrl(earliest.targetDate)
+        // Action labels stay ASCII — ntfy.sh rejects non-ASCII inside its Actions
+        // header (verified 2026-05-15). Title and message body remain UTF-8-safe.
+        const actions = sorted.slice(0, 3).map(n => ({
+            label: `Site ${n.siteNo || n.campsiteId} - ${n.targetDate.slice(5, 10)}`,
+            url: Campground.getCampsiteUrl(n.campsiteId, n.targetDate),
+        }))
+        return { title, clickUrl, actions }
+    }
+
     formatNewlyOpenedMessage(campground, newlyOpened) {
         const header = `${campground.toString()} ${newlyOpened.length} new site(s) opened`
-        const bookingLink = `Book: ${campground.getBookingUrl()}`
 
         const byDate = new Map()
         for (const n of newlyOpened) {
@@ -224,9 +241,10 @@ class Checker {
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([date, items]) => {
                 const datePart = date.slice(0, 10)
-                const lines = [`${weekdayLabel(date)} ${datePart} (${items.length}):`]
+                const bookForDate = campground.getBookingUrl(date)
+                const lines = [`${weekdayLabel(date)} ${datePart} (${items.length}) — book: ${bookForDate}`]
                 for (const n of items) {
-                    const url = Campground.getCampsiteUrl(n.campsiteId)
+                    const url = Campground.getCampsiteUrl(n.campsiteId, date)
                     const detail = [n.loop, n.campsiteType, n.maxPeople ? `max ${n.maxPeople}` : null]
                         .filter(Boolean).join(', ')
                     const detailPart = detail ? ` (${detail})` : ''
@@ -235,7 +253,7 @@ class Checker {
                 return lines.join('\n')
             })
 
-        return [header, bookingLink, '', ...sections].join('\n')
+        return [header, '', ...sections].join('\n')
     }
 
     report = (campground, res, cycleId, options = { excludedSites: [] }) => {
@@ -298,7 +316,7 @@ class Checker {
         if (newlyOpened.length > 0) {
             const message = this.formatNewlyOpenedMessage(campground, newlyOpened)
             logger.info(message)
-            this.notifier.notify(message)
+            this.notifier.notify(message, this.__buildNotifyOptions(campground, newlyOpened))
         } else if (availableSites.length > 0) {
             logger.info(`${campground.toString()} ${availableSites.length} site(s) still open (no new openings)`)
         } else {

@@ -442,9 +442,11 @@ const I18N = {
     event_opened: "opened",
     event_closed: "closed",
     weekdays: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],
+    ago_just_now: "just now",
     ago_sec: (s) => \`\${s}s ago\`,
     ago_min: (m) => \`\${m}m ago\`,
     ago_hour: (h) => \`\${h}h ago\`,
+    ago_day: (d) => \`\${d}d ago\`,
     site_prefix: "Site",
     about_link: "How it works",
   },
@@ -491,9 +493,11 @@ const I18N = {
     event_opened: "开放",
     event_closed: "关闭",
     weekdays: ['周日','周一','周二','周三','周四','周五','周六'],
+    ago_just_now: "刚刚",
     ago_sec: (s) => \`\${s} 秒前\`,
     ago_min: (m) => \`\${m} 分钟前\`,
     ago_hour: (h) => \`\${h} 小时前\`,
+    ago_day: (d) => \`\${d} 天前\`,
     site_prefix: "营位",
     about_link: "工作原理",
   },
@@ -512,15 +516,31 @@ const escape = (s) => String(s).replace(/[&<>"]/g, c => ({
 
 const fmtAgo = (iso) => {
   if (!iso) return '—'
-  const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  // Clamp negatives: client/server clock skew can make seenAt look like the future.
+  const sec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (sec < 5) return T().ago_just_now
   if (sec < 60) return T().ago_sec(sec)
   if (sec < 3600) return T().ago_min(Math.floor(sec / 60))
-  return T().ago_hour(Math.floor(sec / 3600))
+  if (sec < 86400) return T().ago_hour(Math.floor(sec / 3600))
+  return T().ago_day(Math.floor(sec / 86400))
 }
 
 const fmtDateShort = (iso) => {
   const d = new Date(iso)
   return T().weekdays[d.getUTCDay()] + ' ' + iso.slice(5, 10)
+}
+
+// rec.gov's date picker reads ?startdate=YYYY-MM-DD&enddate=YYYY-MM-DD (enddate
+// is checkout). Returns the query string for a one-night stay, or '' if iso is
+// missing/malformed — keep the base URL valid as a fallback.
+const recGovDateQuery = (iso) => {
+  if (!iso) return ''
+  const startdate = String(iso).slice(0, 10)
+  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(startdate)) return ''
+  const next = Date.parse(startdate + 'T00:00:00Z') + 86400000
+  if (!Number.isFinite(next)) return ''
+  const enddate = new Date(next).toISOString().slice(0, 10)
+  return '?startdate=' + startdate + '&enddate=' + enddate
 }
 
 const fmtDrive = (mins) => {
@@ -543,7 +563,8 @@ const renderWeather = (w) => {
 }
 
 const renderSiteItem = (s) => {
-  const url = \`https://www.recreation.gov/camping/campsites/\${escape(s.campsiteId)}\`
+  const firstDate = (s.availableDates || [])[0]
+  const url = \`https://www.recreation.gov/camping/campsites/\${escape(s.campsiteId)}\${recGovDateQuery(firstDate)}\`
   const detail = [s.loop, s.campsiteType, s.maxPeople ? T().max_people(s.maxPeople) : null].filter(Boolean).join(' · ')
   const dates = (s.availableDates || []).map(fmtDateShort).join(', ')
   return \`<div class="site-item">
@@ -554,7 +575,11 @@ const renderSiteItem = (s) => {
 }
 
 const renderCard = (cg) => {
-  const bookingUrl = \`https://www.recreation.gov/camping/campgrounds/\${cg.id}\`
+  const firstOpenDate = Object.entries(cg.availableByDate || {})
+    .filter(([_, n]) => n > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([d]) => d)[0]
+  const bookingUrl = \`https://www.recreation.gov/camping/campgrounds/\${cg.id}\${recGovDateQuery(firstOpenDate)}\`
   const m = cg.meta || {}
   const metaBits = [
     fmtDrive(m.valleyDriveMinutes),

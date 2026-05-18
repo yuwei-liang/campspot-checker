@@ -36,6 +36,38 @@ describe('Campground', () => {
                 'https://www.recreation.gov/camping/campsites/98765'
             )
         })
+
+        test('getBookingUrl appends startdate + enddate for a one-night stay', () => {
+            const c = new Campground('Upper Pines', 232447, 'Yosemite')
+            expect(c.getBookingUrl('2026-06-19T00:00:00.000Z')).toBe(
+                'https://www.recreation.gov/camping/campgrounds/232447?startdate=2026-06-19&enddate=2026-06-20'
+            )
+        })
+
+        test('getCampsiteUrl appends startdate + enddate for a one-night stay', () => {
+            expect(Campground.getCampsiteUrl('98765', '2026-06-19T00:00:00Z')).toBe(
+                'https://www.recreation.gov/camping/campsites/98765?startdate=2026-06-19&enddate=2026-06-20'
+            )
+        })
+
+        test('date range crosses a month boundary correctly', () => {
+            const c = new Campground('X', 1)
+            expect(c.getBookingUrl('2026-06-30T00:00:00Z')).toBe(
+                'https://www.recreation.gov/camping/campgrounds/1?startdate=2026-06-30&enddate=2026-07-01'
+            )
+        })
+
+        test('accepts a bare YYYY-MM-DD string', () => {
+            expect(Campground.getCampsiteUrl('5', '2026-06-19')).toBe(
+                'https://www.recreation.gov/camping/campsites/5?startdate=2026-06-19&enddate=2026-06-20'
+            )
+        })
+
+        test('falls back to no date params when targetDate is malformed', () => {
+            const c = new Campground('X', 1)
+            expect(c.getBookingUrl('not-a-date')).toBe('https://www.recreation.gov/camping/campgrounds/1')
+            expect(Campground.getCampsiteUrl('5', '')).toBe('https://www.recreation.gov/camping/campsites/5')
+        })
     })
 
     describe('toString', () => {

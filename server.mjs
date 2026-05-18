@@ -90,8 +90,9 @@ const checker = new Checker(
     config.targetDates,
     config.webhookUrl,
     config.monthStarts,
+    config.ntfyTopicURL,
 )
-const heartbeatNotifier = new Notifier(config.webhookUrl)
+const heartbeatNotifier = new Notifier(config.webhookUrl, config.ntfyTopicURL)
 
 const liveCheck = (notifier, intervalMinutes = 30) => {
     setInterval(() => {
@@ -179,6 +180,7 @@ app.post('/api/campgrounds/:id/enabled', (req, res) => {
 app.listen(PORT, HOST, async () => {
     logger.info(`Running on http://${HOST}:${PORT}`);
     logger.info(`MONTHS=${config.monthStarts.length} (starting ${config.monthStarts[0]}), TARGET_DATES=${config.targetDates.length} dates, POLL_INTERVAL_MS=${config.pollIntervalMs}`)
+    logger.info(`Alert channels: discord=on${config.ntfyTopicURL ? ', ntfy=on' : ''}`)
     checker.executeCheck().catch(err => logger.error(`initial executeCheck: ${err.message}`))
     scheduleNextCheck(checker, config.pollIntervalMs)
     liveCheck(heartbeatNotifier)

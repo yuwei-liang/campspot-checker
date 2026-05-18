@@ -11,6 +11,7 @@ Polls recreation.gov for campsite availability and pings a Discord channel when 
    - `TARGET_WEEKDAYS` — comma-separated weekday names to monitor, e.g. `Thu,Fri,Sat`. Expands to every matching night across all scanned months.
    - `TARGET_DATE` — optional single-date fallback when `TARGET_WEEKDAYS` is unset, e.g. `2026-06-27T00:00:00Z`.
    - `POLL_INTERVAL_MS` — optional, defaults to `90000` (90s). Don't drop below `1000`.
+   - `NTFY_TOPIC_URL` — optional. Adds a second push channel via [ntfy.sh](https://ntfy.sh) that delivers in ~1s (vs Discord's variable 5–15s mobile push lag). Pick a hard-to-guess topic, e.g. `https://ntfy.sh/campspot-<random-token>`, then subscribe to it in the ntfy iOS/Android app. Each push carries a tap-action that opens the rec.gov campground page with dates already filled in, plus up to 3 per-site buttons. Heartbeats stay on Discord only.
 2. `npm install`
 3. `npm start`
 4. Open http://localhost:8787 for the live status page (override the port with `PORT=...` in `.env` if 8787 is taken).

@@ -1,4 +1,5 @@
 import Checker from '../Checker.mjs'
+import Campground from '../Campground.mjs'
 import { openDatabase } from '../db/db.mjs'
 import { createCampgroundsRepo } from '../db/campgroundsRepo.mjs'
 import { createCyclesRepo } from '../db/cyclesRepo.mjs'
@@ -340,6 +341,25 @@ describe('Checker', () => {
             const cg = checker.getStatus().campgrounds[0]
             expect(cg.status).toBe('error')
             expect(cg.error).toBe('Retry-After:30')
+        })
+    })
+
+    describe('formatNewlyOpenedMessage', () => {
+        test('per-date heading and per-site bullets carry rec.gov date-prefilled deep links', () => {
+            const { checker } = mkChecker(
+                [{ name: 'Atwell', id: 10044710, park: 'Sequoia' }],
+                ['2026-06-26T00:00:00Z', '2026-06-27T00:00:00Z'],
+            )
+            const cg = new Campground('Atwell', 10044710, 'Sequoia')
+            const msg = checker.formatNewlyOpenedMessage(cg, [
+                { campsiteId: 'cs-A', siteNo: '02', targetDate: '2026-06-26T00:00:00Z', loop: 'East', campsiteType: 'TENT ONLY', maxPeople: 8 },
+                { campsiteId: 'cs-B', siteNo: '07', targetDate: '2026-06-27T00:00:00Z', loop: null, campsiteType: null, maxPeople: null },
+            ])
+
+            expect(msg).toContain('https://www.recreation.gov/camping/campgrounds/10044710?startdate=2026-06-26&enddate=2026-06-27')
+            expect(msg).toContain('https://www.recreation.gov/camping/campgrounds/10044710?startdate=2026-06-27&enddate=2026-06-28')
+            expect(msg).toContain('https://www.recreation.gov/camping/campsites/cs-A?startdate=2026-06-26&enddate=2026-06-27')
+            expect(msg).toContain('https://www.recreation.gov/camping/campsites/cs-B?startdate=2026-06-27&enddate=2026-06-28')
         })
     })
 
