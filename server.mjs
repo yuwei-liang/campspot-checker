@@ -94,13 +94,8 @@ const checker = new Checker(
 )
 const heartbeatNotifier = new Notifier(config.webhookUrl, config.ntfyTopicURL)
 
-const liveCheck = (notifier, intervalMinutes = 30) => {
-    setInterval(() => {
-        const minutes = new Date().getMinutes();
-        if (minutes % intervalMinutes === 0) {
-            notifier.heartbeat()
-        }
-    }, 60 * 1000)
+const liveCheck = (notifier, intervalHours = 4) => {
+    setInterval(() => notifier.heartbeat(), intervalHours * 60 * 60 * 1000)
 }
 
 const jitter = () => Math.floor(Math.random() * 10_000)
