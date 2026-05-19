@@ -11,3 +11,8 @@ services:
       - .env
     environment:
       - PORT=8787
+    volumes:
+      # Persist SQLite DB across container recreates. Without this, every
+      # `up -d --force-recreate` wipes campgrounds.enabled toggles, the
+      # availability_events history, and the cycle-baseline used for dedup.
+      - ./data:/usr/src/app/data
