@@ -6,3 +6,4 @@ log/
 data/
 
 
+.claude/settings.local.json
