@@ -1,0 +1,781 @@
+#!/usr/bin/env node
+import * as dotenv from 'dotenv'
+dotenv.config()
+
+import { readFileSync, createReadStream, mkdirSync, appendFileSync } from 'node:fs'
+import path from 'node:path'
+import axios from 'axios'
+import FormData from 'form-data'
+
+import PermitChecker from './PermitChecker.mjs'
+import { login, isLoggedIn, tryGrab, getAccount, warmCart, releaseCart } from './CartBot.mjs'
+import { decide } from './decision.mjs'
+import { httpsAgent } from './dnsBypass.mjs'
+import { benchmarkPolling } from './benchmark.mjs'
+
+const log = {
+    info: (msg) => console.log(`[${new Date().toISOString()}] ${msg}`),
+    warn: (msg) => console.warn(`[${new Date().toISOString()}] WARN ${msg}`),
+    error: (msg) => console.error(`[${new Date().toISOString()}] ERR  ${msg}`),
+}
+
+function loadConfig() {
+    const p = path.resolve('./permit-bot/config.json')
+    const raw = readFileSync(p, 'utf-8')
+    return JSON.parse(raw)
+}
+
+// ntfy topic from existing .env; same channel as the campground bot so the user
+// only has one subscription to manage.
+const NTFY_TOPIC_URL = process.env.NTFY_TOPIC_URL || null
+// Permit-bot has its own Discord channel so cart-hold confirmations don't
+// drown out the campspot-checker's campground alerts. Falls back to the
+// campspot WEBHOOK_URL if no permit-specific one is set.
+const DISCORD_WEBHOOK_URL = process.env.PERMIT_DISCORD_WEBHOOK_URL
+    || process.env.WEBHOOK_URL
+    || null
+
+// Post to the campspot Discord webhook. If screenshotPath is provided, the
+// image is attached as a multipart upload so the user can verify visually
+// without leaving Discord.
+async function discordPush(text, screenshotPath = null) {
+    if (!DISCORD_WEBHOOK_URL) {
+        log.warn('No WEBHOOK_URL in .env — skipping Discord push.')
+        return
+    }
+    try {
+        if (screenshotPath) {
+            const form = new FormData()
+            form.append('payload_json', JSON.stringify({ content: text }), {
+                contentType: 'application/json',
+            })
+            form.append('file1', createReadStream(screenshotPath), {
+                filename: path.basename(screenshotPath),
+                contentType: 'image/png',
+            })
+            await axios.post(DISCORD_WEBHOOK_URL, form, {
+                timeout: 20000,
+                httpsAgent,
+                headers: form.getHeaders(),
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+            })
+        } else {
+            await axios.post(DISCORD_WEBHOOK_URL, { content: text }, { timeout: 10000, httpsAgent })
+        }
+        log.info('Discord push sent.')
+    } catch (err) {
+        log.warn(`Discord push failed: ${err.message}`)
+    }
+}
+
+async function pushNtfy(title, message, opts = {}) {
+    if (!NTFY_TOPIC_URL) return
+    try {
+        const headers = {
+            'Title': title.replace(/[\r\n]+/g, ' ').slice(0, 250),
+            'Priority': opts.priority || '5',
+            'Tags': opts.tags || 'mountain,bell',
+        }
+        if (opts.click) headers['Click'] = opts.click
+        if (opts.actions?.length) {
+            // ntfy "Actions" header is comma-separated, ASCII-only labels.
+            headers['Actions'] = opts.actions.map(a =>
+                `view, ${a.label}, ${a.url}, clear=true`
+            ).join('; ')
+        }
+        await axios.post(NTFY_TOPIC_URL, message, { headers, timeout: 5000, httpsAgent })
+    } catch (err) {
+        log.warn(`ntfy push failed: ${err.message}`)
+    }
+}
+
+function pickIntervalMs(config) {
+    const bw = config.burstWindow
+    if (bw?.startIso && bw?.endIso && bw?.burstIntervalMs) {
+        const now = Date.now()
+        if (now >= Date.parse(bw.startIso) && now <= Date.parse(bw.endIso)) {
+            return bw.burstIntervalMs
+        }
+    }
+    return config.pollIntervalMs
+}
+
+function jitter(ms) {
+    return ms + Math.floor(Math.random() * Math.min(500, ms * 0.2))
+}
+
+async function cmdLogin({ accountIndex = 1 } = {}) {
+    await login({ log, accountIndex })
+}
+
+async function cmdCheckSession({ accountIndex = 1 } = {}) {
+    const ok = await isLoggedIn({ log, accountIndex })
+    const tag = `account=${accountIndex}`
+    console.log(ok ? `LOGGED IN (${tag})` : `NOT logged in (${tag}) — run: node permit-bot/permit-bot.mjs login --account=${accountIndex}`)
+    process.exit(ok ? 0 : 1)
+}
+
+async function cmdProbe() {
+    const config = loadConfig()
+    const checker = new PermitChecker({
+        permitId: config.permitId,
+        targets: config.targets,
+        targetDates: config.targetDates,
+        log,
+    })
+    const payload = await checker.pollOnce()
+    const { snapshot } = checker.diff(payload)
+    console.log('Snapshot rows:')
+    for (const r of snapshot.rows) {
+        const remain = r.remaining == null ? '—' : r.remaining
+        const total = r.total == null ? '—' : r.total
+        console.log(`  ${r.date}  ${r.target.name.padEnd(50)} ${remain}/${total}`)
+    }
+}
+
+async function cmdTestCart({ dryRun = true, overrides = {}, accountIndex = 1 } = {}) {
+    const config = loadConfig()
+    const t = overrides.divisionId
+        ? { divisionId: overrides.divisionId, name: overrides.name || overrides.divisionId }
+        : config.targets[0]
+    const date = overrides.date || config.targetDates[0]
+    const acct = getAccount(accountIndex)
+    log.info(`test-cart: ${t.name} on ${date} (dry-run=${dryRun}) account=${accountIndex}(${acct.email})`)
+    const result = await tryGrab({
+        accountIndex,
+        permitId: config.permitId,
+        divisionId: t.divisionId,
+        divisionName: t.name,
+        date,
+        partySize: overrides.partySize || config.partySize,
+        dryRun,
+        log,
+    })
+    log.info(`Result: ${JSON.stringify({ ok: result.ok, reason: result.reason, cartState: result.cartState })}`)
+
+    // For real for-real runs: post a Discord confirmation with all the details
+    // the user needs to verify (account, trailhead, date, cart state) plus the
+    // /cart screenshot so they can SEE it without leaving Discord.
+    if (!dryRun && result.ok) {
+        const lines = [
+            result.cartState === 'held'
+                ? '✅ **CART HOLD CONFIRMED**'
+                : result.cartState === 'empty'
+                    ? '⚠️ Book Now clicked, but cart is EMPTY (still in wizard? not yet held)'
+                    : '⚠️ Book Now clicked — cart state unclear, see screenshot',
+            `**Account:** #${accountIndex} (${acct.email})`,
+            `**Trailhead:** ${t.name}`,
+            `**Date:** ${date}`,
+            `**Party size:** ${overrides.partySize || config.partySize}`,
+            `**Post-click URL:** ${result.postClickUrl || '(unknown)'}`,
+            `**Cart state:** ${result.cartState}`,
+            `**Action needed:** open https://www.recreation.gov/cart and Remove this hold within 15 min if it's a test`,
+        ]
+        await discordPush(lines.join('\n'), result.cartShot || result.postClickShot)
+    }
+
+    // Hold for 30s so user can inspect; then close.
+    if (result.ctx) {
+        await new Promise(r => setTimeout(r, 30_000))
+        await result.ctx.close().catch(() => {})
+    }
+}
+
+async function cmdTestWarm({ accountIndexes, overrides = {} }) {
+    const config = loadConfig()
+    const t = overrides.divisionId
+        ? { divisionId: overrides.divisionId, name: overrides.name || overrides.divisionId }
+        : config.targets[0]
+    const date = overrides.date || config.targetDates[0]
+    const partySize = overrides.partySize || config.partySize
+    log.info(`test-warm: ${t.name} on ${date} party=${partySize} across accounts=[${accountIndexes.join(',')}]`)
+
+    // 1) Pre-launch one warm cart per account, in parallel.
+    const setupStart = Date.now()
+    const warmers = await Promise.all(
+        accountIndexes.map(idx => warmCart({
+            permitId: config.permitId,
+            date,
+            partySize,
+            accountIndex: idx,
+            log,
+        })),
+    )
+    const setupMs = Date.now() - setupStart
+    log.info(`==== WARM SETUP COMPLETE in ${setupMs}ms across ${warmers.length} accounts ====`)
+
+    // 2) Idle 3s to simulate "waiting for release".
+    log.info('Idling 3s, then firing all hot() in parallel ...')
+    await new Promise(r => setTimeout(r, 3000))
+
+    // 3) Trigger ALL hot() in parallel. This is the simulated "release moment".
+    const fireStart = Date.now()
+    const results = await Promise.all(
+        warmers.map(w => w.hot(t.name, date).catch(err => ({ ok: false, reason: err.message, accountIndex: w.accountIndex, email: w.email }))),
+    )
+    const fireWallMs = Date.now() - fireStart
+    log.info(`==== HOT FIRE COMPLETE in ${fireWallMs}ms (wall clock for slowest) ====`)
+
+    // 4) Report.
+    for (const r of results) {
+        log.info(`acct${r.accountIndex} (${r.email}): ok=${r.ok} cart=${r.cartState ?? '-'} bookClick=${r.latencyMs?.bookClick ?? '-'}ms total=${r.latencyMs?.total ?? '-'}ms`)
+    }
+
+    // 5) Discord per success.
+    for (const r of results) {
+        if (!r.ok) continue
+        const lines = [
+            r.cartState === 'held' ? '✅ **WARM CART HOLD CONFIRMED**' : `⚠️ Warm grab ran but cart=${r.cartState}`,
+            `**Account:** #${r.accountIndex} (${r.email})`,
+            `**Trailhead:** ${t.name}`,
+            `**Date:** ${date}`,
+            `**Party size:** ${partySize}`,
+            `**Latency (book click):** ${r.latencyMs?.bookClick}ms`,
+            `**Latency (cart confirmed):** ${r.latencyMs?.total}ms`,
+            `**Setup time (pre-paid):** ${setupMs}ms`,
+            `**Post-click URL:** ${r.postClickUrl ?? '(unknown)'}`,
+            `**Release after testing:** https://www.recreation.gov/cart`,
+        ]
+        await discordPush(lines.join('\n'), r.cartShot || r.postShot)
+    }
+
+    // 6) Hold contexts open 25s so user can inspect.
+    log.info('Holding warm contexts open 25s for inspection, then closing.')
+    await new Promise(r => setTimeout(r, 25_000))
+    await Promise.all(warmers.map(w => w.ctx.close().catch(() => {})))
+}
+
+// Open a JSONL session log for the current run. Every poll, decision, fire,
+// and result gets appended so we can post-mortem failed grabs offline.
+function openSessionLog() {
+    const dir = path.resolve('./permit-bot/logs')
+    mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const filePath = path.join(dir, `watch-auto-${stamp}.jsonl`)
+    return {
+        filePath,
+        write(event, fields = {}) {
+            const line = JSON.stringify({
+                ts: new Date().toISOString(),
+                event,
+                ...fields,
+            }) + '\n'
+            try { appendFileSync(filePath, line) } catch (err) {
+                console.error(`session log write failed: ${err.message}`)
+            }
+        },
+    }
+}
+
+// LYV-specific auto-grab watch. Polls the API every config.pollIntervalMs and
+// on every cycle runs decide() to figure out if there's a viable plan
+// (solo or split, party 7 first, fall back to 6). Fires all shots in parallel.
+//
+// Exit semantics:
+//   FULL success (all shots → cart held) → exit + notify
+//   PARTIAL success (1+ but not all)     → exit; user decides what to do
+//   ALL fail                              → KEEP WATCHING; user can investigate
+//
+// Heartbeat: every HEARTBEAT_MS, posts a "still alive" Discord ping with
+// poll count + last snapshot, so an unattended overnight monitor is visible.
+//
+// Session log: every event (poll, decision, fire, error, heartbeat) appended
+// as JSONL to permit-bot/logs/watch-auto-{timestamp}.jsonl. Post-mortem fuel.
+async function cmdWatchAuto({
+    preWarm = false,
+    simulate = null,
+    fakeHi = null,
+    fakeGp = null,
+    partyTargets = null,
+    hiDiv = null,
+    hiName = null,
+    gpDiv = null,
+    gpName = null,
+} = {}) {
+    const config = loadConfig()
+    // LYV-specific division IDs (must match decision.mjs).
+    // Simulate mode overrides to Cottonwood Creek so we can dry-run the full
+    // fire path against a known-available slot without waiting for LYV release.
+    // Explicit --hi-div/--gp-div override both modes for custom test scenarios.
+    const HI_ID = hiDiv || (simulate ? '44585909' : '44585917')
+    const HI_NAME = hiName || (simulate ? 'Cottonwood Creek' : 'Happy Isles -> Little Yosemite Valley (No Donohue)')
+    const GP_ID = gpDiv || (simulate ? '44585909' : '44585913')
+    const GP_NAME = gpName || (simulate ? 'Cottonwood Creek' : 'Glacier Point -> Little Yosemite Valley')
+    const checker = new PermitChecker({
+        permitId: config.permitId,
+        targets: [
+            { divisionId: HI_ID, name: HI_NAME },
+            { divisionId: GP_ID, name: GP_NAME },
+        ],
+        targetDates: config.targetDates,
+        log,
+    })
+
+    const session = openSessionLog()
+    const sessionStart = Date.now()
+    const HEARTBEAT_MS = 30 * 60 * 1000  // 30 min
+    let pollCount = 0
+    let consecutiveAllFail = 0
+    let lastSnapshotSummary = '(none yet)'
+    // Anchor first heartbeat to sessionStart so it fires HEARTBEAT_MS after
+    // launch, not immediately (otherwise it doubles up with the startup ping).
+    let lastHeartbeatAt = Date.now()
+
+    log.info(`watch-auto: targets=LYV (HI+GP), dates=${config.targetDates.join(', ')}, poll=${config.pollIntervalMs}ms, preWarm=${preWarm}`)
+    log.info(`Session log: ${session.filePath}`)
+    session.write('startup', {
+        targets: config.targetDates,
+        pollIntervalMs: config.pollIntervalMs,
+        preWarm,
+        simulate,
+        fakeHi,
+        fakeGp,
+    })
+
+    // Startup Discord ping so you know the monitor is up.
+    await discordPush([
+        '🟢 **watch-auto started**',
+        `**Dates:** ${config.targetDates.join(', ')}`,
+        `**Poll interval:** ${config.pollIntervalMs}ms`,
+        `**Pre-warm:** ${preWarm ? 'on (acct1 HI party=7)' : 'off'}`,
+        `**Mode:** ${simulate ? 'SIMULATE → Cottonwood Creek' : 'LYV LIVE'}`,
+        `**Session log:** \`${session.filePath}\``,
+        `Heartbeat every 30 min until grab or shutdown.`,
+    ].join('\n'))
+
+    // Pre-warm BOTH accounts in parallel — acct1 on Happy Isles party=7 (solo
+    // case), acct2 on Glacier Point party=6 (split case where gp ≤ 6). T11
+    // autonomously downgrades party on the fly if remaining < pinned size, so
+    // both warmers can also handle smaller-party plans without rebuilding.
+    const warmers = []
+    if (preWarm) {
+        const specs = [
+            { accountIndex: 1, divisionId: HI_ID, divisionName: HI_NAME, partySize: 7, role: 'HI/solo' },
+            { accountIndex: 2, divisionId: GP_ID, divisionName: GP_NAME, partySize: 6, role: 'GP/split' },
+        ]
+        log.info(`Pre-warming ${specs.length} accounts in parallel: ${specs.map(s => `acct${s.accountIndex} ${s.role} party=${s.partySize}`).join(', ')}`)
+        const results = await Promise.allSettled(specs.map(spec => warmCart({
+            permitId: config.permitId,
+            date: config.targetDates[0],
+            partySize: spec.partySize,
+            accountIndex: spec.accountIndex,
+            log,
+        })))
+        for (let i = 0; i < results.length; i++) {
+            const spec = specs[i]
+            const r = results[i]
+            if (r.status === 'fulfilled') {
+                warmers.push({ ...r.value, ...spec })
+                session.write('prewarm', { accountIndex: spec.accountIndex, ok: true })
+            } else {
+                log.warn(`Pre-warm acct${spec.accountIndex} failed: ${r.reason?.message}. Cold-only for that account.`)
+                session.write('prewarm', { accountIndex: spec.accountIndex, ok: false, error: r.reason?.message })
+            }
+        }
+        log.info(`Pre-warm complete; ${warmers.length}/${specs.length} warmers idling.`)
+    }
+
+    let firedThisRun = false
+
+    // Trailhead overrides feed into decide() so the returned shots target the
+    // right divisions. simulate mode points both at Cottonwood; explicit
+    // --hi-div/--gp-div let us mix trailheads (e.g. real cross-trailhead test).
+    const overrideTrailheads = !!(simulate || hiDiv || gpDiv)
+    const decideOpts = {}
+    if (overrideTrailheads) {
+        decideOpts.hiTrailhead = { divisionId: HI_ID, name: HI_NAME }
+        decideOpts.gpTrailhead = { divisionId: GP_ID, name: GP_NAME }
+    }
+    if (partyTargets) decideOpts.partyTargets = partyTargets
+
+    // Per-date independent decision. We exit on FULL or PARTIAL success;
+    // ALL-FAIL keeps the watcher alive (incrementing consecutiveAllFail) so a
+    // transient blip (slow network, bad selector miss, captcha) doesn't lose
+    // the rest of the morning.
+    const tryFireForDate = async (date, hiRemain, gpRemain) => {
+        if (firedThisRun) return
+        const plan = decide({ hi: hiRemain, gp: gpRemain, ...decideOpts })
+        if (!plan) return
+        log.info(`!! decision for ${date}: ${plan.kind} party=${plan.partySize}`)
+        for (const s of plan.shots) log.info(`   shot: acct${s.accountIndex} ${s.name} party=${s.party}`)
+        session.write('decision', { date, plan: { kind: plan.kind, partySize: plan.partySize, shots: plan.shots } })
+
+        await pushNtfy(
+            `LYV plan firing: ${plan.kind} party=${plan.partySize} on ${date}`,
+            plan.shots.map(s => `acct${s.accountIndex} ${s.name.split('->')[0].trim()} ${s.party}p`).join(' + '),
+            { priority: '5', tags: 'rotating_light,mountain' },
+        )
+
+        // Match shot to warmer by accountIndex (each account has at most one
+        // warmer). T11 autonomous downgrade handles party-size mismatch on the
+        // page itself, so any planned party ≤ warmer.partySize works.
+        const findWarmer = (s) => warmers.find(w => w.accountIndex === s.accountIndex)
+
+        const shotPromises = plan.shots.map(async (s) => {
+            const tag = `[shot acct${s.accountIndex} ${s.divisionId}]`
+            const warmer = findWarmer(s)
+            try {
+                if (warmer) {
+                    log.info(`${tag} using warm hot path (warmer pinned at party=${warmer.partySize}, plan party=${s.party})`)
+                    const r = await warmer.hot(s.name, date)
+                    return { ...r, shot: s }
+                } else {
+                    log.info(`${tag} cold launch`)
+                    const r = await tryGrab({
+                        permitId: config.permitId,
+                        divisionId: s.divisionId,
+                        divisionName: s.name,
+                        date,
+                        partySize: s.party,
+                        accountIndex: s.accountIndex,
+                        log,
+                    })
+                    // tryGrab returns slightly different shape; normalize.
+                    return {
+                        ok: r.ok,
+                        cartState: r.cartState,
+                        postClickUrl: r.postClickUrl,
+                        postShot: r.postClickShot,
+                        cartShot: r.cartShot,
+                        accountIndex: s.accountIndex,
+                        email: getAccount(s.accountIndex).email,
+                        shot: s,
+                    }
+                }
+            } catch (err) {
+                log.error(`${tag} threw: ${err.message}`)
+                return { ok: false, reason: err.message, accountIndex: s.accountIndex, email: getAccount(s.accountIndex).email, shot: s }
+            }
+        })
+
+        const results = await Promise.all(shotPromises)
+        const heldCount = results.filter(r => r.cartState === 'held').length
+        const allHeld = heldCount === plan.shots.length
+        const allFailed = heldCount === 0
+        // Use ACTUAL party (after autonomous overcap downgrade), not the
+        // planned shot.party. A shot planned for 7 may have committed 4 if
+        // the soldier-on-the-field detected only 4 left.
+        const partyAcquired = results
+            .filter(r => r.cartState === 'held')
+            .reduce((sum, r) => sum + (r.actualParty ?? r.shot?.party ?? 0), 0)
+
+        const summary = allHeld
+            ? `✅ FULL SUCCESS: ${plan.kind} party=${plan.partySize}`
+            : !allFailed
+                ? `⚠️ PARTIAL: held ${partyAcquired}/${plan.partySize} people across ${heldCount}/${plan.shots.length} shots`
+                : `❌ ALL FAILED — watcher will keep polling`
+        log.info(summary)
+        session.write('fire_results', {
+            date,
+            allHeld,
+            allFailed,
+            heldCount,
+            partyAcquired,
+            results: results.map(r => ({
+                accountIndex: r.accountIndex,
+                shot: r.shot,
+                cartState: r.cartState,
+                reason: r.reason,
+                latencyMs: r.latencyMs,
+            })),
+        })
+
+        // Per-shot Discord notifications.
+        for (const r of results) {
+            const partyLine = (r.actualParty != null && r.actualParty !== r.shot.party)
+                ? `**Party:** ${r.actualParty} acquired (planned ${r.shot.party} — autonomous downgrade)`
+                : `**Party size:** ${r.shot.party}`
+            const lines = [
+                r.cartState === 'held'
+                    ? '✅ **CART HOLD CONFIRMED (watch-auto)**'
+                    : `❌ Shot failed: ${r.reason || `cart=${r.cartState ?? 'unknown'}`}`,
+                `**Account:** #${r.accountIndex} (${r.email})`,
+                `**Trailhead:** ${r.shot.name}`,
+                `**Date:** ${date}`,
+                partyLine,
+                `**Plan kind:** ${plan.kind} (target party=${plan.partySize})`,
+                `**Latency book-click:** ${r.latencyMs?.bookClick ?? '-'}ms`,
+                `**Latency total:** ${r.latencyMs?.total ?? '-'}ms`,
+            ]
+            await discordPush(lines.join('\n'), r.cartShot || r.postShot || null)
+        }
+
+        // Plan-level summary push.
+        const summarySuffix = allHeld
+            ? ' — RELEASE TEST HOLDS IF THIS WAS A SIMULATION'
+            : !allFailed
+                ? ` — partial hold. Release at https://www.recreation.gov/cart if you don't want it.`
+                : ` — kept watching (attempt ${consecutiveAllFail + 1})`
+        await discordPush(`${summary} — ${date} — fired ${plan.shots.length} shot(s)${summarySuffix}`)
+
+        // Exit/continue logic. Critical T3 fix: don't exit on all-fail.
+        if (allHeld || !allFailed) {
+            firedThisRun = true
+            consecutiveAllFail = 0
+        } else {
+            consecutiveAllFail += 1
+            // Safety valve: after 5 consecutive total failures, give up so we
+            // don't burn forever against a broken page (selectors changed,
+            // rec.gov maintenance, etc).
+            if (consecutiveAllFail >= 5) {
+                log.error('5 consecutive all-fails. Shutting down.')
+                await discordPush('🔴 **watch-auto giving up: 5 consecutive all-fail attempts.** Selectors may have broken — check the session log.')
+                firedThisRun = true
+            } else {
+                // Brief cooldown so we don't immediately re-fire against the
+                // same broken state.
+                await new Promise(r => setTimeout(r, 30_000))
+            }
+        }
+    }
+
+    // Main poll loop.
+    while (!firedThisRun) {
+        const tickStart = Date.now()
+        try {
+            const payload = await checker.pollOnce()
+            const { snapshot } = checker.diff(payload)
+            checker.resetBackoff()
+            pollCount += 1
+
+            // Build {date -> {hi, gp}} from snapshot rows.
+            const byDate = {}
+            for (const r of snapshot.rows) {
+                if (!byDate[r.date]) byDate[r.date] = { hi: null, gp: null }
+                if (r.target.divisionId === HI_ID) byDate[r.date].hi = r.remaining
+                if (r.target.divisionId === GP_ID) byDate[r.date].gp = r.remaining
+            }
+
+            const summary = Object.entries(byDate)
+                .map(([d, v]) => `${d.slice(5)} HI=${v.hi ?? '—'} GP=${v.gp ?? '—'}`)
+                .join(' | ')
+            lastSnapshotSummary = summary
+            log.info(`poll ${pollCount} ok | ${summary}`)
+            session.write('poll', { count: pollCount, byDate, durationMs: Date.now() - tickStart })
+
+            for (const [date, v] of Object.entries(byDate)) {
+                // For testing: --fake-hi/--fake-gp override the snapshot values
+                // (e.g. force a split scenario when real numbers say solo).
+                const hiUsed = fakeHi != null ? fakeHi : (v.hi ?? 0)
+                const gpUsed = fakeGp != null ? fakeGp : (v.gp ?? 0)
+                if (fakeHi != null || fakeGp != null) {
+                    log.info(`(fake snapshot) hi=${hiUsed} gp=${gpUsed} for ${date}`)
+                }
+                await tryFireForDate(date, hiUsed, gpUsed)
+                if (firedThisRun) break
+            }
+        } catch (err) {
+            checker.handleError(err)
+            session.write('poll_error', { error: err.message, backoffMs: checker.backoffMs })
+        }
+
+        // Heartbeat: every HEARTBEAT_MS, ping Discord so the user knows we're alive.
+        const now = Date.now()
+        if (now - lastHeartbeatAt >= HEARTBEAT_MS) {
+            lastHeartbeatAt = now
+            const uptimeMin = Math.floor((now - sessionStart) / 60000)
+            const msg = [
+                '💓 **watch-auto heartbeat**',
+                `**Uptime:** ${uptimeMin} min`,
+                `**Polls:** ${pollCount}`,
+                `**Last snapshot:** ${lastSnapshotSummary}`,
+                `**Consec failures:** ${consecutiveAllFail}`,
+                `**Backoff:** ${checker.backoffMs}ms`,
+                `Still watching — no opening yet (or last fire pending).`,
+            ].join('\n')
+            await discordPush(msg)
+            session.write('heartbeat', { pollCount, uptimeMin, lastSnapshotSummary })
+        }
+
+        if (firedThisRun) break
+        const elapsed = Date.now() - tickStart
+        const sleepMs = Math.max(0, pickIntervalMs(config) - elapsed) + checker.backoffMs
+        await new Promise(r => setTimeout(r, sleepMs))
+    }
+
+    log.info(`watch-auto: exiting. Session log: ${session.filePath}`)
+    session.write('shutdown', { pollCount, uptimeMs: Date.now() - sessionStart })
+    await new Promise(r => setTimeout(r, 30_000))
+    for (const w of warmers) await w.ctx.close().catch(() => {})
+}
+
+async function cmdWatch({ autoGrab = false } = {}) {
+    const config = loadConfig()
+    const checker = new PermitChecker({
+        permitId: config.permitId,
+        targets: config.targets,
+        targetDates: config.targetDates,
+        log,
+    })
+
+    // We only fire the cart bot once per (date, division) hit to avoid stacking
+    // browser windows when the slot stays open across several polls.
+    const fired = new Set()
+    let grabInFlight = false
+
+    log.info(`Watching permit ${config.permitId} for ${config.targetDates.join(', ')}`)
+    log.info(`Targets: ${config.targets.map(t => t.name).join(' | ')}`)
+    log.info(`Auto-grab: ${autoGrab ? 'ON' : 'OFF (notify only)'}; ntfy: ${NTFY_TOPIC_URL ? 'on' : 'off'}`)
+
+    while (true) {
+        const intervalMs = pickIntervalMs(config)
+        const start = Date.now()
+        try {
+            const payload = await checker.pollOnce()
+            const { openings } = checker.diff(payload)
+            checker.resetBackoff()
+            if (openings.length > 0) {
+                log.info(`!! Openings (${openings.length}): ${openings.map(o => `${o.name} ${o.date} (${o.remaining})`).join(' | ')}`)
+                for (const o of openings) {
+                    const key = `${o.date}|${o.divisionId}`
+                    if (fired.has(key)) continue
+                    fired.add(key)
+                    const title = `LYV OPEN: ${o.name} ${o.date}`
+                    const msg = `${o.remaining}/${o.total} remaining — grab now`
+                    const click = `https://www.recreation.gov/permits/${config.permitId}/registration/detailed-availability?type=overnight-permit&date=${o.date}`
+                    await pushNtfy(title, msg, { click, priority: '5', tags: 'rotating_light,mountain' })
+                    if (autoGrab && !grabInFlight) {
+                        grabInFlight = true
+                        ;(async () => {
+                            try {
+                                await tryGrab({
+                                    permitId: config.permitId,
+                                    divisionId: o.divisionId,
+                                    divisionName: o.name,
+                                    date: o.date,
+                                    partySize: config.partySize,
+                                    dryRun: false,
+                                    log,
+                                })
+                            } finally {
+                                grabInFlight = false
+                            }
+                        })()
+                    }
+                }
+            } else {
+                // quiet log every cycle so we can tell it's alive
+                const sample = checker.lastSnapshot?.rows
+                    ?.map(r => `${r.date.slice(5)}/${r.target.divisionId}=${r.remaining ?? '—'}`)
+                    .join(' ')
+                log.info(`poll ok | ${sample}`)
+            }
+        } catch (err) {
+            checker.handleError(err)
+        }
+        const elapsed = Date.now() - start
+        const sleepMs = Math.max(0, jitter(intervalMs) - elapsed) + checker.backoffMs
+        await new Promise(r => setTimeout(r, sleepMs))
+    }
+}
+
+const subcommand = process.argv[2]
+const rest = process.argv.slice(3)
+const flags = new Set(rest.filter(a => a.startsWith('--') && !a.includes('=')))
+// Parse --key=value style overrides for test-cart
+const kv = Object.fromEntries(
+    rest.filter(a => a.startsWith('--') && a.includes('='))
+        .map(a => {
+            const [k, ...v] = a.slice(2).split('=')
+            return [k, v.join('=')]
+        })
+)
+
+;(async () => {
+    try {
+        const accountIndex = kv.account ? Number(kv.account) : 1
+        switch (subcommand) {
+            case 'login':
+                await cmdLogin({ accountIndex }); break
+            case 'check-session':
+                await cmdCheckSession({ accountIndex }); break
+            case 'probe':
+                await cmdProbe(); break
+            case 'test-cart':
+                await cmdTestCart({
+                    accountIndex,
+                    dryRun: !flags.has('--for-real'),
+                    overrides: {
+                        divisionId: kv.division,
+                        name: kv.name,
+                        date: kv.date,
+                        partySize: kv.party ? Number(kv.party) : undefined,
+                    },
+                }); break
+            case 'watch':
+                await cmdWatch({ autoGrab: flags.has('--auto-grab') }); break
+            case 'watch-auto':
+                await cmdWatchAuto({
+                    preWarm: flags.has('--pre-warm'),
+                    simulate: flags.has('--simulate'),
+                    fakeHi: kv['fake-hi'] != null ? Number(kv['fake-hi']) : null,
+                    fakeGp: kv['fake-gp'] != null ? Number(kv['fake-gp']) : null,
+                    hiDiv: kv['hi-div'] || null,
+                    hiName: kv['hi-name'] || null,
+                    gpDiv: kv['gp-div'] || null,
+                    gpName: kv['gp-name'] || null,
+                    partyTargets: kv['party-targets']
+                        ? kv['party-targets'].split(',').map(s => Number(s.trim())).filter(Number.isFinite)
+                        : null,
+                }); break
+            case 'test-warm': {
+                const accountsCsv = kv.accounts || '1,2'
+                const accountIndexes = accountsCsv.split(',').map(s => Number(s.trim())).filter(Number.isFinite)
+                await cmdTestWarm({
+                    accountIndexes,
+                    overrides: {
+                        divisionId: kv.division,
+                        name: kv.name,
+                        date: kv.date,
+                        partySize: kv.party ? Number(kv.party) : undefined,
+                    },
+                })
+                break
+            }
+            case 'release-cart': {
+                // Test-only helper: clear cart hold(s) for the given account(s).
+                // NEVER call this from watch / production paths.
+                const accountsCsv = kv.accounts || String(accountIndex)
+                const accountIndexes = accountsCsv.split(',').map(s => Number(s.trim())).filter(Number.isFinite)
+                for (const idx of accountIndexes) {
+                    const r = await releaseCart({ accountIndex: idx, log })
+                    log.info(`acct${idx}: removed=${r.removed} state=${r.state}`)
+                }
+                break
+            }
+            case 'benchmark': {
+                const config = loadConfig()
+                const ym = config.targetDates[0].slice(0, 7)
+                const [yy, mm] = ym.split('-').map(Number)
+                const monthStartIso = new Date(Date.UTC(yy, mm - 1, 1)).toISOString()
+                const monthEndIso = new Date(Date.UTC(yy, mm, 0)).toISOString()
+                await benchmarkPolling({
+                    permitId: config.permitId,
+                    monthStartIso,
+                    monthEndIso,
+                    intervalMs: Number(kv.interval ?? 2000),
+                    concurrency: Number(kv.concurrency ?? 1),
+                    durationSec: Number(kv.duration ?? 60),
+                    log,
+                })
+                break
+            }
+            default:
+                console.log(`Usage:
+  node permit-bot/permit-bot.mjs login [--account=N]              # interactive rec.gov login (default account=1)
+  node permit-bot/permit-bot.mjs check-session [--account=N]      # verify saved login still works
+  node permit-bot/permit-bot.mjs probe                             # one-shot availability snapshot
+  node permit-bot/permit-bot.mjs watch                             # poll continuously, notify only
+  node permit-bot/permit-bot.mjs watch --auto-grab                 # poll continuously, fire CartBot on hit
+  node permit-bot/permit-bot.mjs test-cart [--account=N]           # dry-run cart flow (no clicks)
+  node permit-bot/permit-bot.mjs test-cart --for-real [--account=N]
+  node permit-bot/permit-bot.mjs benchmark --interval=2000 --duration=60 --concurrency=1
+`)
+                process.exit(1)
+        }
+    } catch (err) {
+        log.error(err.stack || err.message)
+        process.exit(2)
+    }
+})()

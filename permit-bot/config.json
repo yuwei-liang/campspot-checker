@@ -1,0 +1,17 @@
+{
+  "permitId": "445859",
+  "permitName": "Yosemite Wilderness Permits",
+  "targets": [
+    { "divisionId": "44585917", "name": "Happy Isles -> Little Yosemite Valley (No Donohue)" },
+    { "divisionId": "44585913", "name": "Glacier Point -> Little Yosemite Valley" }
+  ],
+  "targetDates": ["2026-06-19", "2026-06-20"],
+  "partySize": 7,
+  "pollIntervalMs": 1500,
+  "burstWindow": {
+    "comment": "Optional: during this UTC window, poll at burstIntervalMs instead. Leave empty to disable.",
+    "startIso": null,
+    "endIso": null,
+    "burstIntervalMs": 1500
+  }
+}
