@@ -10,8 +10,20 @@
 //   {kind:'solo',  shots:[{accountIndex, divisionId, name, party}], partySize}
 //   {kind:'split', shots:[..., ...],                                  partySize}
 
-const HAPPY_ISLES = { divisionId: '44585917', name: 'Happy Isles -> Little Yosemite Valley (No Donohue)' }
-const GLACIER_POINT = { divisionId: '44585913', name: 'Glacier Point -> Little Yosemite Valley' }
+// Trailhead constants. Names match rec.gov's exact DOM text (no spaces around
+// `->`, with "(No Donohue Pass)" suffix on HI). nameTokens drive the robust
+// token-based row matcher in CartBot.findRowByTokens — anchor concepts that
+// survive whitespace and copy edits.
+const HAPPY_ISLES = {
+    divisionId: '44585917',
+    name: 'Happy Isles->Little Yosemite Valley (No Donohue Pass)',
+    nameTokens: ['Happy Isles', 'Little Yosemite Valley'],
+}
+const GLACIER_POINT = {
+    divisionId: '44585913',
+    name: 'Glacier Point->Little Yosemite Valley',
+    nameTokens: ['Glacier Point', 'Little Yosemite Valley'],
+}
 const GP_CAP = 6   // Glacier Point max group size
 const HI_CAP = 15  // Happy Isles max group size
 

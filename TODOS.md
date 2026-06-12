@@ -43,6 +43,16 @@
 **Pros:** Simpler code, predictable timing.
 **Cons:** Loses minute-aligned heartbeats (current code fires near :00 and :30 of the hour).
 
+## Containerize permit-bot for Alienware (post-LYV-grab)
+**What:** Ship the permit bot as a Docker stack on the Alienware homelab host (`192.168.68.90`) following the `/home/fredcorn/<app>/` + `homelab/<app>/` pattern. Source-of-truth: `homelab/permit-bot/`. Image: `mcr.microsoft.com/playwright:v1.60.0-jammy` base. Volumes for `.chromium-profile*` (login state) and `permit-bot/logs/`. Default cmd: `watch-auto --pre-warm`. Heartbeat-via-Discord is the watchdog (no listening port unless we add a `/health` endpoint for Kuma).
+
+**Why:** Always-on watcher with no laptop-sleep risk. Alienware has 6C/12T + 32 GB so two Chromiums + Node is nothing. Race latency unchanged vs Mac (same home ISP egress).
+
+**Pros:** Survives Mac sleep/reboot; integrates with existing Beszel/Kuma/Caddy ops; reuses `alienware-f20d0e8e20ccaa5c` ntfy topic.
+**Cons:** Login bootstrap is awkward — must do headed `login --account=N` locally on Mac then rsync `.chromium-profile*` dirs to the Alienware volume (treat as secrets — they're session cookies). Headless on server = can't recover from a mid-grab captcha; heartbeat will surface the failure but the race for that release moment is lost. For race-critical fire moments, a us-east-1 VM still beats home internet (~80-120ms → ~10-30ms RTT to rec.gov on AWS).
+**Context:** Defer until current Mac-based setup has secured the LYV spots. Don't fork bot code — homelab compose should pull from `workspaces/campspot-checker/permit-bot/` via build context.
+**Depends on:** at least one successful grab with the current setup (validate the bot end-to-end before re-platforming).
+
 ## Rotate webhook one more time post-deploy
 **What:** The webhook URL was pasted into a Claude chat conversation during this implementation. Once deployment is verified, generate a new webhook URL, update `.env`, and revoke the current one. Belt-and-suspenders since chat transcripts can be cached.
 

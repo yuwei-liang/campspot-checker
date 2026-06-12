@@ -28,21 +28,161 @@ async function ensureDir(dir) {
     await mkdir(dir, { recursive: true })
 }
 
-// Find the trailhead row whose FIRST-cell text is exactly divisionName.
-// hasText:substring would match a sibling row (e.g. "Cottonwood Creek" also
-// matches a hypothetical "Cottonwood Creek (cross-country)" row); .first()
-// then picks whichever sorts first in DOM order. Bug-magnet — verify exact.
-async function findTrailheadRow(page, divisionName) {
+// Find the trailhead row in rec.gov's DOM.
+//
+// rec.gov layout (probed 2026-06-12):
+//   div[role="row"][data-component="Row"] class="rec-grid-row"
+//     div[role="gridcell"][data-component="GridCell"]
+//       button[data-component="Button"][aria-label="<full trailhead name>"]
+//         > the name button (text shown to user in column 1)
+//     div[role="gridcell"] (one per date)
+//       button[aria-label="<weekday> <day>, ..."]
+//         > the availability cell
+//
+// The 2026-06-12 race-day failure: we matched by full-string substring on the
+// row's innerText. Config had "Happy Isles -> Little Yosemite Valley (No
+// Donohue)" but the page has "Happy Isles->Little Yosemite Valley (No Donohue
+// Pass)" — different whitespace + missing word. hasText filter returned 0
+// rows. Fix: token-based aria-label match. Robust to whitespace, extra words,
+// and most copy edits as long as the tokens stay anchor concepts.
+//
+// Token strategy: pass nameTokens like ["Happy Isles", "Little Yosemite
+// Valley"]. We find buttons whose aria-label contains ALL tokens, then walk
+// up to the row. Specific enough to distinguish from sibling rows (e.g.
+// "Happy Isles->Illilouette" lacks "Little Yosemite Valley" → no match).
+export async function findRowByTokens(page, nameTokens) {
+    if (!Array.isArray(nameTokens) || nameTokens.length === 0) return null
+    // Build a button selector requiring every token in aria-label.
+    const ariaSel = nameTokens
+        .map(t => `[aria-label*="${t.replace(/"/g, '\\"')}"]`)
+        .join('')
+    const button = page.locator(`button${ariaSel}`).first()
+    if (await button.count() === 0) return null
+    // Walk up to the enclosing row.
+    const row = button.locator('xpath=ancestor::*[@role="row"][1]')
+    if (await row.count() === 0) return null
+    return row
+}
+
+// Structured inventory of every trailhead name visible on the page right now.
+// rec.gov uses <button data-component="Button" aria-label="<full name>"> for
+// each trailhead row. We dedupe (a name may appear multiple times in the DOM
+// from nested re-renders) and return a sorted list.
+//
+// Logged at warm-time. If a future race fails with row_not_visible, the
+// session log holds a snapshot of EXACTLY what was on the page — no need to
+// re-derive from screenshots.
+export async function getTrailheadInventory(page) {
+    try {
+        return await page.evaluate(() => {
+            const names = new Set()
+            for (const b of document.querySelectorAll('button[aria-label]')) {
+                const label = b.getAttribute('aria-label') || ''
+                // Filter to trailhead-row buttons. Excludes date cells (which
+                // have labels like "FRI 19, People: 12 out of 12") and the
+                // group-size popover buttons.
+                if (
+                    label.length > 8 &&
+                    !/^(FRI|SAT|SUN|MON|TUE|WED|THU)\s+\d/i.test(label) &&
+                    !/no online reservations/i.test(label) &&
+                    !/not yet released/i.test(label) &&
+                    !/add|remove|group|peoples|next|prev/i.test(label)
+                ) {
+                    names.add(label)
+                }
+            }
+            return [...names].sort()
+        })
+    } catch {
+        return []
+    }
+}
+
+// Per-target presence check (warm-time sanity check). For each target,
+// asks findTrailheadRow whether the row exists; returns
+// [{divisionId, name, ok, strategy}, ...]. Caller logs/alerts on `ok:false`.
+// Extracted from warmCart for direct testability.
+export async function checkExpectedRows(page, targets, log = console) {
+    const results = []
+    for (const t of targets) {
+        const { row, strategy } = await findTrailheadRow(page, t)
+        const ok = !!row
+        results.push({
+            divisionId: t.divisionId,
+            name: t.name,
+            ok,
+            strategy: strategy || 'none',
+        })
+        log.info?.(`row-check ${t.name}: ${ok ? `OK (${strategy})` : 'MISSING'}`)
+    }
+    return results
+}
+
+// Find a trailhead row; if it isn't in the DOM, call `reloadAndResetup`
+// (which should reload the page + redo group-size) and try once more,
+// then poll-fallback for up to 5s for any final SPA re-render lag.
+//
+// This is the 2026-06-12 race-day fix: the warm browser's DOM was stale
+// (the SPA didn't re-fetch when backend availability flipped 0→non-zero),
+// and the old code just polled the SAME stale DOM for 5 seconds. Now we
+// FORCE a fresh fetch on first miss.
+//
+// Returns { row: Locator|null, strategy, didReload }.
+//
+// Extracted from warmCart.hot() for direct testability.
+export async function findRowWithReloadRecovery(page, target, reloadAndResetup, log = console) {
+    let didReload = false
+    let result = await findTrailheadRow(page, target)
+    if (!result.row) {
+        log.warn?.('hot: row not in DOM, reloading page to refresh SPA state ...')
+        try {
+            await reloadAndResetup()
+            didReload = true
+            result = await findTrailheadRow(page, target)
+        } catch (err) {
+            log.warn?.(`hot: reload path failed: ${err.message}`)
+        }
+    }
+    if (!result.row) {
+        const deadline = Date.now() + 5000
+        while (Date.now() < deadline && !result.row) {
+            await page.waitForTimeout(300)
+            result = await findTrailheadRow(page, target)
+        }
+    }
+    return { ...result, didReload }
+}
+
+// Legacy name-based finder. Kept as a SECOND-CHANCE fallback only — robust
+// matching now lives in findRowByTokens. Callers should prefer tokens.
+async function findTrailheadRowByName(page, divisionName) {
     const rows = await page.locator('tr, [role="row"]').filter({ hasText: divisionName }).all()
     for (const r of rows) {
-        // Take the row's first interactive cell or text node and exact-match.
         const firstButton = r.locator('button, [role="cell"], td').first()
         const txt = (await firstButton.innerText().catch(() => '')).trim()
         if (txt === divisionName) return r
     }
-    // Fallback: previous behavior. Log the ambiguity so we notice if rec.gov
-    // renames or adds a near-duplicate trailhead row.
     return null
+}
+
+// Unified finder: tokens first (preferred), then name fallback. Returns
+// { row, strategy } where strategy is 'tokens' | 'name' | null. The strategy
+// is logged so we notice if we silently fell back to the fragile path.
+export async function findTrailheadRow(page, target) {
+    // Back-compat: original callers passed a bare string for divisionName.
+    if (typeof target === 'string') {
+        const row = await findTrailheadRowByName(page, target)
+        return row ? { row, strategy: 'name' } : { row: null, strategy: null }
+    }
+    if (target?.nameTokens?.length) {
+        const row = await findRowByTokens(page, target.nameTokens)
+        if (row) return { row, strategy: 'tokens' }
+    }
+    if (target?.name) {
+        const row = await findTrailheadRowByName(page, target.name)
+        if (row) return { row, strategy: 'name' }
+    }
+    return { row: null, strategy: null }
 }
 
 // Build a persistent Chromium context for the given account. Headed so we can
@@ -202,6 +342,92 @@ export async function isLoggedIn({ log = console, accountIndex = 1 } = {}) {
     }
 }
 
+// Drive an already-loaded rec.gov page through the verify flow: set party
+// size (best-effort — handlers may already be detached in static fixtures),
+// wait for content to settle, then row-check each target via findTrailheadRow.
+//
+// Extracted from verifyConfigOnce so tests can drive it against route-mocked
+// pages without paying for a full BrowserContext / saved profile.
+//
+// `timeouts` allows tests to shrink the popover/content waits since static
+// fixtures never satisfy them and a 12s real-world timeout becomes 12s of
+// dead-air per test. Defaults match production.
+export async function verifyConfigOnPage(page, partySize, targets, log = console, timeouts = {}) {
+    const { triggerWaitMs = 12000, plusClickMs = 1500, bodyContentMs = 15000 } = timeouts
+    const errors = []
+    const perTarget = []
+    try {
+        // Best-effort group-size setup. rec.gov filters trailheads by
+        // party-size availability — without this the table may not fully
+        // render. In test/mock mode the popover JS isn't attached, so clicks
+        // are no-ops; we tolerate that and proceed to the row check.
+        const trigger = page.locator(
+            'button:has-text("Add Group Members"), [aria-label*="Group" i]'
+        ).first()
+        try {
+            await trigger.waitFor({ state: 'visible', timeout: triggerWaitMs })
+            await trigger.click()
+            await page.waitForTimeout(400)
+            const plus = page.locator('button[aria-label="Add Peoples"]').first()
+            for (let i = 0; i < partySize; i++) {
+                await plus.click({ timeout: plusClickMs }).catch(() => {})
+                await page.waitForTimeout(50)
+            }
+            await page.keyboard.press('Escape')
+            await page.waitForTimeout(1200)
+        } catch {
+            // Static fixture / mocked page — popover trigger may not be
+            // present or clickable. The row check still works if rows are
+            // already in the DOM.
+        }
+        await page.waitForFunction(
+            () => (document.body.innerText || '').length > 5000,
+            null,
+            { timeout: bodyContentMs, polling: 500 },
+        ).catch(() => {})
+        for (const t of targets) {
+            const { row, strategy } = await findTrailheadRow(page, t)
+            const found = !!row
+            perTarget.push({
+                divisionId: t.divisionId,
+                name: t.name,
+                nameTokens: t.nameTokens,
+                found,
+                strategy: strategy || 'none',
+            })
+            log.info?.(`verify-config ${t.name}: ${found ? `OK (${strategy})` : 'MISSING'}`)
+            if (!found) errors.push(`${t.name} (id=${t.divisionId}) not found via tokens [${t.nameTokens?.join(', ')}]`)
+        }
+    } catch (err) {
+        errors.push(`probe failed: ${err.message}`)
+    }
+    return { ok: errors.length === 0, perTarget, errors }
+}
+
+// Pre-flight: hit the live detailed-availability page, set the party size,
+// and confirm each target's row is reachable via findRowByTokens. Used by
+// the `verify-config` subcommand AND by watch-auto's heartbeat to catch
+// rec.gov copy edits before race day. Headless + uses acct1's saved profile
+// (any logged-in profile works; we use acct1 because it always exists).
+//
+// Returns { ok, perTarget: [{ divisionId, name, nameTokens, found, strategy }], errors }.
+export async function verifyConfigOnce({ permitId, date, partySize, targets, log = console }) {
+    const ctx = await launchContext({ headless: true, accountIndex: 1 })
+    const url = `https://www.recreation.gov/permits/${permitId}/registration/detailed-availability` +
+        `?type=overnight-permit&date=${date}`
+    try {
+        const page = await ctx.newPage()
+        page.setDefaultTimeout(15000)
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 })
+        await page.waitForTimeout(2000)
+        return await verifyConfigOnPage(page, partySize, targets, log)
+    } catch (err) {
+        return { ok: false, perTarget: [], errors: [`probe failed: ${err.message}`] }
+    } finally {
+        await ctx.close().catch(() => {})
+    }
+}
+
 // The actual cart-grab flow. Opens the date-prefilled detail page, drives as
 // much of the wizard as we can with stable-looking selectors, and STOPS at the
 // cart hold (no payment). On any selector miss it pauses and leaves the page
@@ -210,6 +436,7 @@ export async function tryGrab({
     permitId,
     divisionId,
     divisionName,
+    divisionTokens = null,
     date,
     partySize,
     dryRun = false,
@@ -220,6 +447,11 @@ export async function tryGrab({
         `?type=overnight-permit&date=${date}`
     const acct = getAccount(accountIndex)
     log.info(`tryGrab: ${divisionName} on ${date} (party ${partySize}) account=${accountIndex}(${acct.email}) -> ${url}`)
+    // Token-based matching is preferred. Fall back to the legacy name string
+    // only when no tokens are configured (older test scripts).
+    const target = divisionTokens?.length
+        ? { name: divisionName, nameTokens: divisionTokens, divisionId }
+        : { name: divisionName, divisionId }
 
     const ctx = await launchContext({ headless: false, accountIndex })
     const page = await ctx.newPage()
@@ -287,20 +519,23 @@ export async function tryGrab({
         await page.waitForTimeout(1500)
         log.info(`Set group size to ${partySize}.`)
 
-        // Step 2: wait for the entry-points table to populate, then exact-match
-        // the row. Substring-match is a bug magnet for sibling trailhead names.
-        let row = null
+        // Step 2: wait for the entry-points table to populate, then find our
+        // row. Token-based matching (aria-label contains-all-tokens) is the
+        // primary path; legacy exact-text matching is the fallback.
+        let rowResult = { row: null, strategy: null }
         const rowDeadline = Date.now() + 20000
-        while (Date.now() < rowDeadline && !row) {
-            row = await findTrailheadRow(page, divisionName)
-            if (!row) await page.waitForTimeout(500)
+        while (Date.now() < rowDeadline && !rowResult.row) {
+            rowResult = await findTrailheadRow(page, target)
+            if (!rowResult.row) await page.waitForTimeout(500)
         }
+        let row = rowResult.row
         if (!row) {
-            log.warn(`Row not found by exact match: ${divisionName}. Falling back to substring + first.`)
+            log.warn(`Row not found by tokens or name: ${divisionName}. Last-resort substring + first.`)
             row = page.locator('tr, [role="row"]').filter({ hasText: divisionName }).first()
             await row.waitFor({ state: 'visible', timeout: 5000 })
+            rowResult.strategy = 'substring-fallback'
         }
-        log.info(`Row visible: ${divisionName}`)
+        log.info(`Row found via ${rowResult.strategy}: ${divisionName}`)
 
         // Step 3: find the cell for our SPECIFIC date. rec.gov's cell buttons
         // carry aria-labels like "FRI 19\nPeople:  12 out of 12" when bookable,
@@ -519,6 +754,11 @@ export async function warmCart({
     date,
     partySize,
     accountIndex = 1,
+    // expectedTargets: array of {divisionId, name, nameTokens} this warmer
+    // intends to potentially fire on. After group-size setup we verify each
+    // row is present and return a checkedRows summary; if any are MISSING
+    // the caller should alert loudly (today's bug class).
+    expectedTargets = [],
     log = console,
 }) {
     const url = `https://www.recreation.gov/permits/${permitId}/registration/detailed-availability` +
@@ -531,6 +771,30 @@ export async function warmCart({
     const page = await ctx.newPage()
     page.setDefaultTimeout(15000)
     await mkdir(path.resolve('./permit-bot/.screenshots'), { recursive: true })
+    await mkdir(path.resolve('./permit-bot/.traces'), { recursive: true })
+
+    // Industry-standard browser-automation observability: Playwright Trace
+    // Recording captures every action, network call, DOM snapshot, and
+    // console message. On a fire failure we save the trace as a .zip; open
+    // it in https://trace.playwright.dev for click-through post-mortem.
+    // Replay shows the exact moment selectors stopped matching.
+    try {
+        await ctx.tracing.start({ screenshots: true, snapshots: true, sources: false })
+    } catch (err) {
+        log.warn(`${tag} tracing start failed: ${err.message}`)
+    }
+
+    // Capture browser console + page errors. React errors and CSP violations
+    // become silent in production unless we listen — the warm browser may
+    // be throwing exceptions for hours without us knowing.
+    page.on('console', (msg) => {
+        if (['error', 'warning'].includes(msg.type())) {
+            log.info(`${tag} console.${msg.type()}: ${msg.text().slice(0, 200)}`)
+        }
+    })
+    page.on('pageerror', (err) => {
+        log.warn(`${tag} pageerror: ${err.message.slice(0, 200)}`)
+    })
 
     await page.goto(url, { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2000)
@@ -557,6 +821,19 @@ export async function warmCart({
     else await page.keyboard.press('Escape')
     await page.waitForTimeout(1500)
     log.info(`${tag} warm setup complete: group=${partySize}, idle on page.`)
+
+    // Warm-time row sanity check via the exported checkExpectedRows helper.
+    // Same code path as the tests; bugs in this assertion will reproduce
+    // identically in CI.
+    const checkedRows = await checkExpectedRows(page, expectedTargets, {
+        info: (m) => log.info(`${tag} ${m}`),
+    })
+
+    // Structured DOM inventory. Logged once at warm time; the session log holds
+    // a snapshot of EXACTLY which trailheads were visible. If something fails
+    // later we don't have to re-derive from screenshots.
+    const domInventory = await getTrailheadInventory(page)
+    log.info(`${tag} dom inventory: ${domInventory.length} trailheads visible`)
 
     // currentParty is mutable: when a hot() call detects overcap (cell exists
     // but slot count < currentParty), we DOWNGRADE on the fly via the popover,
@@ -604,26 +881,67 @@ export async function warmCart({
     }
 
     // The hot path — to be called the instant a slot is detected open.
-    const hot = async (divisionName, date) => {
+    // `target` is the trailhead descriptor: { divisionId, name, nameTokens }.
+    // Back-compat: if called with a bare string for divisionName it falls
+    // through to the legacy name-only finder (slow + fragile, but still works).
+    const hot = async (target, date) => {
         const t0 = Date.now()
+        // Phase-level latency capture. Each phase records the ms elapsed
+        // since the previous milestone; the session log gets a precise
+        // breakdown of "where the 5 seconds went" instead of just a total.
+        const phases = {}
+        let lastMark = t0
+        const mark = (name) => {
+            const now = Date.now()
+            phases[name] = now - lastMark
+            lastMark = now
+        }
         const screenshotPath = (label) =>
             path.resolve(`./permit-bot/.screenshots/${Date.now()}-acct${accountIndex}-${label}.png`)
         const baseMeta = { accountIndex, email: acct.email }
+        const divisionName = typeof target === 'string' ? target : target?.name
 
-        // Exact-match row (same defensive pattern as cold tryGrab).
-        let row = await findTrailheadRow(page, divisionName)
-        if (!row) {
-            // Fallback only if exact-match doesn't find anything within 5s.
-            const fallbackDeadline = Date.now() + 5000
-            while (Date.now() < fallbackDeadline && !row) {
+        // Token-first row lookup via the exported reload-recovery helper.
+        // If the warmer's snapshot is stale (rows missing because a filter
+        // hid 0-availability trailheads), reloadAndResetup forces the SPA
+        // to re-fetch. Same code path the tests exercise.
+        const reloadAndResetup = async () => {
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 8000 })
+            await page.waitForTimeout(1500)
+            const groupTriggerR = page.locator(
+                'button:has-text("Add Group Members"), button:has-text("Group Member"), button:has-text("People"), [aria-label*="Group" i]'
+            ).first()
+            if (await groupTriggerR.count() > 0) {
+                await groupTriggerR.click().catch(() => {})
                 await page.waitForTimeout(300)
-                row = await findTrailheadRow(page, divisionName)
+                const plusBtnR = page.locator('button[aria-label="Add Peoples"]').first()
+                for (let i = 0; i < currentParty; i++) {
+                    await plusBtnR.click({ timeout: 1500 }).catch(() => {})
+                    await page.waitForTimeout(40)
+                }
+                await page.keyboard.press('Escape')
+                await page.waitForTimeout(700)
             }
         }
+        const rowResult = await findRowWithReloadRecovery(
+            page, target, reloadAndResetup,
+            { info: (m) => log.info?.(`${tag} ${m}`), warn: (m) => log.warn?.(`${tag} ${m}`) },
+        )
+        mark('row_lookup')
+        const row = rowResult.row
         if (!row) {
             await page.screenshot({ path: screenshotPath('hot-fail-no-row'), fullPage: true }).catch(() => {})
-            return { ok: false, reason: 'row_not_visible', latencyMs: Date.now() - t0, ...baseMeta }
+            const tracePath = path.resolve(`./permit-bot/.traces/hot-fail-${Date.now()}-acct${accountIndex}-no-row.zip`)
+            await ctx.tracing.stop({ path: tracePath }).catch(() => {})
+            log.warn(`${tag} hot failed (row_not_visible). Trace saved: ${tracePath}`)
+            return {
+                ok: false, reason: 'row_not_visible',
+                latencyMs: { total: Date.now() - t0, phases, didReload: rowResult.didReload },
+                tracePath,
+                ...baseMeta,
+            }
         }
+        log.info(`${tag} hot: row found via ${rowResult.strategy}${rowResult.didReload ? ' (after reload)' : ''}`)
 
         const [y, m, d] = date.split('-').map(Number)
         const weekday = new Date(Date.UTC(y, m - 1, d))
@@ -701,11 +1019,21 @@ export async function warmCart({
         }
         if (!match) {
             await page.screenshot({ path: screenshotPath('hot-fail-no-cell'), fullPage: true }).catch(() => {})
-            return { ok: false, reason: 'no_matching_cell', latencyMs: Date.now() - t0, ...baseMeta }
+            const tracePath = path.resolve(`./permit-bot/.traces/hot-fail-${Date.now()}-acct${accountIndex}-no-cell.zip`)
+            await ctx.tracing.stop({ path: tracePath }).catch(() => {})
+            log.warn(`${tag} hot failed (no_matching_cell). Trace saved: ${tracePath}`)
+            return {
+                ok: false, reason: 'no_matching_cell',
+                latencyMs: { total: Date.now() - t0, phases, didReload: rowResult.didReload },
+                tracePath,
+                ...baseMeta,
+            }
         }
+        mark('cell_find')
         log.info(`${tag} matched cell ${JSON.stringify(match.label)} at currentParty=${currentParty}`)
 
         await match.handle.click()
+        mark('cell_click')
         const book = page.getByRole('button', { name: /^book now$/i }).first()
         await book.waitFor({ state: 'visible', timeout: 5000 })
         await page.waitForFunction(
@@ -717,7 +1045,9 @@ export async function warmCart({
             null,
             { timeout: 5000, polling: 100 },
         ).catch(() => {})
+        mark('book_button_ready')
         await book.click()
+        mark('book_click')
         const tBook = Date.now() - t0
         log.info(`${tag} clicked Book Now at +${tBook}ms`)
 
@@ -726,6 +1056,7 @@ export async function warmCart({
         await page.waitForTimeout(2500)
         await handleLoginModalIfPresent(page, { log, accountIndex })
         await page.waitForTimeout(2000)
+        mark('post_click_wait')
         const postClickUrl = page.url()
         const postShot = screenshotPath('hot-post-book')
         await page.screenshot({ path: postShot, fullPage: true }).catch(() => {})
@@ -749,6 +1080,7 @@ export async function warmCart({
         } catch (err) {
             log.warn(`${tag} cart check failed: ${err.message}`)
         }
+        mark('cart_check')
 
         const totalMs = Date.now() - t0
         return {
@@ -757,7 +1089,16 @@ export async function warmCart({
             postClickUrl,
             postShot,
             cartShot,
-            latencyMs: { bookClick: tBook, total: totalMs },
+            // Phases let post-mortems answer "where did the 5 seconds go?"
+            // without re-running. Common pattern: row_lookup spikes when
+            // reload fires; book_button_ready spikes when rec.gov is slow.
+            latencyMs: {
+                bookClick: tBook,
+                total: totalMs,
+                phases,
+                didReload: rowResult.didReload,
+                strategy: rowResult.strategy,
+            },
             accountIndex,
             email: acct.email,
             // Actual party committed (after any overcap downgrade). May be <
@@ -768,5 +1109,5 @@ export async function warmCart({
         }
     }
 
-    return { ctx, page, hot, accountIndex, email: acct.email }
+    return { ctx, page, hot, accountIndex, email: acct.email, checkedRows, domInventory }
 }

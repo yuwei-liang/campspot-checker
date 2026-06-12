@@ -24,7 +24,7 @@ red()   { printf "\033[31m%s\033[0m\n" "$*"; }
 green() { printf "\033[32m%s\033[0m\n" "$*"; }
 blue()  { printf "\033[34m%s\033[0m\n" "$*"; }
 
-blue "=== 1/6 stopping any running watch-auto (including ghosts) ==="
+blue "=== 1/7 stopping any running watch-auto (including ghosts) ==="
 # pkill returns non-zero if no match; that's fine — we ignore it via the `|| true`.
 pkill -f "permit-bot.mjs watch-auto" 2>/dev/null || true
 sleep 2
@@ -43,11 +43,55 @@ fi
 green "✓ clean state"
 
 blue ""
-blue "=== 2/6 releasing any leftover cart holds (defensive) ==="
+blue "=== 2/7 verifying login state for both accounts (auto-relogin if needed) ==="
+# Persistent profile cookies expire. A logged-out warm browser is a silent
+# failure — handleLoginModalIfPresent only fires when a modal is OPEN, not
+# when the page is anonymous. Gate the whole flow on this BEFORE touching
+# cart holds or launching watch-auto.
+#
+# If a session is dead, the `login` subcommand auto-fills creds from .env
+# (REC_EMAIL_N / REC_PASSWORD_N), so we can self-heal without user input —
+# UNLESS rec.gov throws a CAPTCHA / 2FA challenge, in which case the user
+# must finish in the headed window before the internal 5-min timeout.
+LOGIN_FAIL=0
+for acct in 1 2; do
+    if node permit-bot/permit-bot.mjs check-session --account=$acct > /dev/null 2>&1; then
+        green "✓ acct$acct logged in"
+        continue
+    fi
+    red "✗ acct$acct session expired — attempting auto-relogin from .env creds..."
+    # `login` opens headed Chromium, auto-fills, waits up to 5 min for the
+    # "Sign Up / Log In" button to disappear. If CAPTCHA pops, user solves
+    # it in that window; otherwise it's hands-free.
+    if node permit-bot/permit-bot.mjs login --account=$acct 2>&1 | tail -5; then
+        if node permit-bot/permit-bot.mjs check-session --account=$acct > /dev/null 2>&1; then
+            green "✓ acct$acct auto-relogin OK"
+        else
+            red "✗ acct$acct: login command finished but check-session still fails."
+            LOGIN_FAIL=1
+        fi
+    else
+        red "✗ acct$acct: login command failed (CAPTCHA? missing .env creds?)."
+        LOGIN_FAIL=1
+    fi
+done
+if [ "$LOGIN_FAIL" = "1" ]; then
+    red ""
+    red "ABORT: auto-relogin couldn't recover at least one account. Likely a"
+    red "CAPTCHA or 2FA challenge on rec.gov side. Run manually:"
+    red ""
+    red "    node permit-bot/permit-bot.mjs login --account=N"
+    red ""
+    red "(headed window opens — solve any challenge there). Then re-run this script."
+    exit 1
+fi
+
+blue ""
+blue "=== 3/7 releasing any leftover cart holds (defensive) ==="
 node permit-bot/permit-bot.mjs release-cart --accounts=1,2 2>&1 | grep -E "acct[12]:" || true
 
 blue ""
-blue "=== 3/6 starting fresh watch-auto --pre-warm ==="
+blue "=== 4/7 starting fresh watch-auto --pre-warm ==="
 rm -f "$PID_FILE" "$LOG_FILE"
 nohup node permit-bot/permit-bot.mjs watch-auto --pre-warm > "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
@@ -55,7 +99,7 @@ NEW_PID=$(cat "$PID_FILE")
 green "✓ launched PID $NEW_PID"
 
 blue ""
-blue "=== 4/6 waiting for both warmers (15-25s) ==="
+blue "=== 5/7 waiting for both warmers (15-25s) ==="
 # Wait up to 35s for "Pre-warm complete; N/2 warmers idling."
 deadline=$((SECONDS + 35))
 while [ $SECONDS -lt $deadline ]; do
@@ -71,7 +115,7 @@ else
 fi
 
 blue ""
-blue "=== 5/6 verifying poll loop ==="
+blue "=== 6/7 verifying poll loop ==="
 sleep 4
 POLLS=$(grep -c "poll [0-9]* ok" "$LOG_FILE" || echo 0)
 LATEST=$(tail -1 "$LOG_FILE")
@@ -89,7 +133,7 @@ else
 fi
 
 blue ""
-blue "=== 6/6 ready ==="
+blue "=== 7/7 ready ==="
 SESSION_LOG=$(grep "Session log:" "$LOG_FILE" | head -1 | awk -F': ' '{print $NF}')
 cat <<EOF
 

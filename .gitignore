@@ -11,4 +11,8 @@ data/
 permit-bot/.chromium-profile/
 permit-bot/.chromium-profile-*/
 permit-bot/.screenshots/
+permit-bot/.traces/
+permit-bot/.outbox.jsonl
+permit-bot/.last-page-snapshot.html
+permit-bot/.dom-fingerprint.json
 permit-bot/logs/

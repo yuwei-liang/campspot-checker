@@ -3,12 +3,14 @@ import * as dotenv from 'dotenv'
 dotenv.config()
 
 import { readFileSync, createReadStream, mkdirSync, appendFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import axios from 'axios'
 import FormData from 'form-data'
 
 import PermitChecker from './PermitChecker.mjs'
-import { login, isLoggedIn, tryGrab, getAccount, warmCart, releaseCart } from './CartBot.mjs'
+import { login, isLoggedIn, tryGrab, getAccount, warmCart, releaseCart, verifyConfigOnce } from './CartBot.mjs'
+import * as outbox from './outbox.mjs'
 import { decide } from './decision.mjs'
 import { httpsAgent } from './dnsBypass.mjs'
 import { benchmarkPolling } from './benchmark.mjs'
@@ -35,15 +37,28 @@ const DISCORD_WEBHOOK_URL = process.env.PERMIT_DISCORD_WEBHOOK_URL
     || process.env.WEBHOOK_URL
     || null
 
-// Post to the campspot Discord webhook. If screenshotPath is provided, the
+// Discord delivery telemetry. Tracks consecutive failures + last error so the
+// heartbeat can surface "Discord is broken" without the user discovering it
+// at fire moment (a silent webhook is a silent bot).
+const discordTelemetry = {
+    sent: 0,
+    failed: 0,
+    consecutiveFailures: 0,
+    lastError: null,
+    lastStatusCode: null,
+}
+
+// Post to the campspot Discord webhook. Returns { ok, status, error } so
+// callers can react to rate-limit / outage. If screenshotPath is provided, the
 // image is attached as a multipart upload so the user can verify visually
 // without leaving Discord.
 async function discordPush(text, screenshotPath = null) {
     if (!DISCORD_WEBHOOK_URL) {
         log.warn('No WEBHOOK_URL in .env — skipping Discord push.')
-        return
+        return { ok: false, status: 0, error: 'no_webhook' }
     }
     try {
+        let res
         if (screenshotPath) {
             const form = new FormData()
             form.append('payload_json', JSON.stringify({ content: text }), {
@@ -53,7 +68,7 @@ async function discordPush(text, screenshotPath = null) {
                 filename: path.basename(screenshotPath),
                 contentType: 'image/png',
             })
-            await axios.post(DISCORD_WEBHOOK_URL, form, {
+            res = await axios.post(DISCORD_WEBHOOK_URL, form, {
                 timeout: 20000,
                 httpsAgent,
                 headers: form.getHeaders(),
@@ -61,11 +76,64 @@ async function discordPush(text, screenshotPath = null) {
                 maxContentLength: Infinity,
             })
         } else {
-            await axios.post(DISCORD_WEBHOOK_URL, { content: text }, { timeout: 10000, httpsAgent })
+            res = await axios.post(DISCORD_WEBHOOK_URL, { content: text }, { timeout: 10000, httpsAgent })
         }
-        log.info('Discord push sent.')
+        discordTelemetry.sent += 1
+        discordTelemetry.consecutiveFailures = 0
+        discordTelemetry.lastStatusCode = res.status
+        log.info(`Discord push sent (status ${res.status}).`)
+        return { ok: true, status: res.status }
     } catch (err) {
-        log.warn(`Discord push failed: ${err.message}`)
+        const status = err.response?.status ?? 0
+        discordTelemetry.failed += 1
+        discordTelemetry.consecutiveFailures += 1
+        discordTelemetry.lastError = err.message
+        discordTelemetry.lastStatusCode = status
+        // Discord rate-limits at 30/min per webhook; 429 means we're being
+        // throttled and should slow down. 5xx = Discord outage. Either way,
+        // a silent failure here = silent bot, so log loudly + enqueue.
+        log.warn(`Discord push failed (status ${status}): ${err.message}. Consecutive: ${discordTelemetry.consecutiveFailures}`)
+        // Outbox: enqueue the failed push so the next heartbeat retries.
+        // Catches transient 429s and short Discord outages.
+        try {
+            const id = outbox.enqueue({ text, screenshotPath, reason: `status_${status}` })
+            log.info(`Outbox enqueued ${id} for retry (depth=${outbox.depth()})`)
+        } catch (oErr) {
+            log.warn(`Outbox enqueue failed: ${oErr.message}`)
+        }
+        return { ok: false, status, error: err.message }
+    }
+}
+
+// Raw HTTP push — no outbox indirection, no telemetry mutations. Used by
+// the outbox flusher itself so retries don't infinite-loop back into the
+// outbox.
+async function rawDiscordSend(text, screenshotPath = null) {
+    if (!DISCORD_WEBHOOK_URL) return { ok: false, status: 0, error: 'no_webhook' }
+    try {
+        let res
+        if (screenshotPath) {
+            const form = new FormData()
+            form.append('payload_json', JSON.stringify({ content: text }), {
+                contentType: 'application/json',
+            })
+            form.append('file1', createReadStream(screenshotPath), {
+                filename: path.basename(screenshotPath),
+                contentType: 'image/png',
+            })
+            res = await axios.post(DISCORD_WEBHOOK_URL, form, {
+                timeout: 20000,
+                httpsAgent,
+                headers: form.getHeaders(),
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+            })
+        } else {
+            res = await axios.post(DISCORD_WEBHOOK_URL, { content: text }, { timeout: 10000, httpsAgent })
+        }
+        return { ok: true, status: res.status }
+    } catch (err) {
+        return { ok: false, status: err.response?.status ?? 0, error: err.message }
     }
 }
 
@@ -116,6 +184,38 @@ async function cmdCheckSession({ accountIndex = 1 } = {}) {
     process.exit(ok ? 0 : 1)
 }
 
+// Pre-flight DOM check: confirms every target's nameTokens still resolve to
+// a row in rec.gov's live DOM. Exits 0 if all OK, 1 if any missing — wire it
+// into race-restart.sh and CI to catch rec.gov copy edits before race day.
+async function cmdVerifyConfig() {
+    const config = loadConfig()
+    const targets = config.targets.map(t => ({
+        divisionId: t.divisionId,
+        name: t.name,
+        // Fall back to first-segment tokens if config doesn't define nameTokens
+        // explicitly (older configs without the field still get token matching).
+        nameTokens: t.nameTokens || [t.name.split('->')[0].trim(), t.name.split(' (')[0].split('->').pop().trim()],
+    }))
+    log.info(`verify-config: probing ${targets.length} targets against live rec.gov`)
+    const result = await verifyConfigOnce({
+        permitId: config.permitId,
+        date: config.targetDates[0],
+        partySize: config.partySize,
+        targets,
+        log,
+    })
+    for (const t of result.perTarget) {
+        console.log(`  ${t.found ? '✓' : '✗'} ${t.name.padEnd(60)} id=${t.divisionId} via=${t.strategy}`)
+    }
+    if (!result.ok) {
+        console.error('\nVERIFY FAILED:')
+        for (const e of result.errors) console.error(`  - ${e}`)
+        process.exit(1)
+    }
+    console.log('\nVERIFY OK: all targets resolve from tokens.')
+    process.exit(0)
+}
+
 async function cmdProbe() {
     const config = loadConfig()
     const checker = new PermitChecker({
@@ -147,6 +247,7 @@ async function cmdTestCart({ dryRun = true, overrides = {}, accountIndex = 1 } =
         permitId: config.permitId,
         divisionId: t.divisionId,
         divisionName: t.name,
+        divisionTokens: t.nameTokens,
         date,
         partySize: overrides.partySize || config.partySize,
         dryRun,
@@ -248,16 +349,24 @@ async function cmdTestWarm({ accountIndexes, overrides = {} }) {
 
 // Open a JSONL session log for the current run. Every poll, decision, fire,
 // and result gets appended so we can post-mortem failed grabs offline.
+//
+// Correlation IDs: every event carries a `sessionId` (one per watch-auto run)
+// plus an optional `fireId` (one per fire). Post-mortem `jq` queries like
+// `select(.fireId == "abc")` reconstruct the full timeline of one fire across
+// decisions/shots/results. Lightweight trace context — no OpenTelemetry needed.
 function openSessionLog() {
     const dir = path.resolve('./permit-bot/logs')
     mkdirSync(dir, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     const filePath = path.join(dir, `watch-auto-${stamp}.jsonl`)
+    const sessionId = randomUUID()
     return {
         filePath,
+        sessionId,
         write(event, fields = {}) {
             const line = JSON.stringify({
                 ts: new Date().toISOString(),
+                sessionId,
                 event,
                 ...fields,
             }) + '\n'
@@ -298,16 +407,21 @@ async function cmdWatchAuto({
     // Simulate mode overrides to Cottonwood Creek so we can dry-run the full
     // fire path against a known-available slot without waiting for LYV release.
     // Explicit --hi-div/--gp-div override both modes for custom test scenarios.
+    // Names match rec.gov's exact DOM text (no spaces around `->`, with
+    // "(No Donohue Pass)" on HI). nameTokens drive token-based row matching
+    // in CartBot.findRowByTokens — robust to whitespace and rec.gov copy
+    // edits. Simulate mode points at Cottonwood Creek for live-fire testing.
     const HI_ID = hiDiv || (simulate ? '44585909' : '44585917')
-    const HI_NAME = hiName || (simulate ? 'Cottonwood Creek' : 'Happy Isles -> Little Yosemite Valley (No Donohue)')
+    const HI_NAME = hiName || (simulate ? 'Cottonwood Creek' : 'Happy Isles->Little Yosemite Valley (No Donohue Pass)')
+    const HI_TOKENS = simulate ? ['Cottonwood Creek'] : ['Happy Isles', 'Little Yosemite Valley']
     const GP_ID = gpDiv || (simulate ? '44585909' : '44585913')
-    const GP_NAME = gpName || (simulate ? 'Cottonwood Creek' : 'Glacier Point -> Little Yosemite Valley')
+    const GP_NAME = gpName || (simulate ? 'Cottonwood Creek' : 'Glacier Point->Little Yosemite Valley')
+    const GP_TOKENS = simulate ? ['Cottonwood Creek'] : ['Glacier Point', 'Little Yosemite Valley']
+    const HI_TARGET = { divisionId: HI_ID, name: HI_NAME, nameTokens: HI_TOKENS }
+    const GP_TARGET = { divisionId: GP_ID, name: GP_NAME, nameTokens: GP_TOKENS }
     const checker = new PermitChecker({
         permitId: config.permitId,
-        targets: [
-            { divisionId: HI_ID, name: HI_NAME },
-            { divisionId: GP_ID, name: GP_NAME },
-        ],
+        targets: [HI_TARGET, GP_TARGET],
         targetDates: config.targetDates,
         log,
     })
@@ -351,15 +465,21 @@ async function cmdWatchAuto({
     const warmers = []
     if (preWarm) {
         const specs = [
-            { accountIndex: 1, divisionId: HI_ID, divisionName: HI_NAME, partySize: 7, role: 'HI/solo' },
-            { accountIndex: 2, divisionId: GP_ID, divisionName: GP_NAME, partySize: 6, role: 'GP/split' },
+            { accountIndex: 1, target: HI_TARGET, partySize: 7, role: 'HI/solo' },
+            { accountIndex: 2, target: GP_TARGET, partySize: 6, role: 'GP/split' },
         ]
         log.info(`Pre-warming ${specs.length} accounts in parallel: ${specs.map(s => `acct${s.accountIndex} ${s.role} party=${s.partySize}`).join(', ')}`)
+        // Each warmer is briefed on BOTH LYV targets so it can sanity-check
+        // that both rows are present at warm time. If one is missing, we
+        // alert immediately rather than discovering at fire-time (the 06-12
+        // bug class).
+        const expectedTargets = [HI_TARGET, GP_TARGET]
         const results = await Promise.allSettled(specs.map(spec => warmCart({
             permitId: config.permitId,
             date: config.targetDates[0],
             partySize: spec.partySize,
             accountIndex: spec.accountIndex,
+            expectedTargets,
             log,
         })))
         for (let i = 0; i < results.length; i++) {
@@ -367,13 +487,52 @@ async function cmdWatchAuto({
             const r = results[i]
             if (r.status === 'fulfilled') {
                 warmers.push({ ...r.value, ...spec })
-                session.write('prewarm', { accountIndex: spec.accountIndex, ok: true })
+                session.write('prewarm', {
+                    accountIndex: spec.accountIndex,
+                    ok: true,
+                    checkedRows: r.value.checkedRows,
+                    domInventoryCount: r.value.domInventory?.length || 0,
+                })
+                // Item 1: snapshot the full trailhead inventory at warm time.
+                // If any future race fails with row_not_visible, this is the
+                // ground-truth record of which rows were on the page.
+                session.write('warm_dom_inventory', {
+                    accountIndex: spec.accountIndex,
+                    count: r.value.domInventory?.length || 0,
+                    trailheads: r.value.domInventory || [],
+                })
             } else {
                 log.warn(`Pre-warm acct${spec.accountIndex} failed: ${r.reason?.message}. Cold-only for that account.`)
                 session.write('prewarm', { accountIndex: spec.accountIndex, ok: false, error: r.reason?.message })
             }
         }
         log.info(`Pre-warm complete; ${warmers.length}/${specs.length} warmers idling.`)
+
+        // CRITICAL alarm: if any warmer reports a missing target row, race
+        // will fail with row_not_visible. Surface it now (not at 7am).
+        const missing = []
+        for (const w of warmers) {
+            for (const c of w.checkedRows || []) {
+                if (!c.ok) missing.push({ accountIndex: w.accountIndex, ...c })
+            }
+        }
+        if (missing.length) {
+            const lines = [
+                '🚨 **WARM-PAGE ROW CHECK FAILED — RACE WILL FAIL UNLESS FIXED**',
+                ...missing.map(m =>
+                    `acct${m.accountIndex} missing row: \`${m.name}\` (divisionId=${m.divisionId})`,
+                ),
+                '',
+                'Tokens are out of sync with rec.gov display text. Run',
+                '`node permit-bot/permit-bot.mjs verify-config` to see the live row text',
+                'and update `decision.mjs` HAPPY_ISLES/GLACIER_POINT.',
+            ].join('\n')
+            log.error(lines)
+            await discordPush(lines)
+            session.write('warm_row_check_failed', { missing })
+        } else if (warmers.length === expectedTargets.length) {
+            log.info('Warm row check: ALL OK')
+        }
     }
 
     let firedThisRun = false
@@ -384,8 +543,8 @@ async function cmdWatchAuto({
     const overrideTrailheads = !!(simulate || hiDiv || gpDiv)
     const decideOpts = {}
     if (overrideTrailheads) {
-        decideOpts.hiTrailhead = { divisionId: HI_ID, name: HI_NAME }
-        decideOpts.gpTrailhead = { divisionId: GP_ID, name: GP_NAME }
+        decideOpts.hiTrailhead = HI_TARGET
+        decideOpts.gpTrailhead = GP_TARGET
     }
     if (partyTargets) decideOpts.partyTargets = partyTargets
 
@@ -396,10 +555,26 @@ async function cmdWatchAuto({
     const tryFireForDate = async (date, hiRemain, gpRemain) => {
         if (firedThisRun) return
         const plan = decide({ hi: hiRemain, gp: gpRemain, ...decideOpts })
-        if (!plan) return
-        log.info(`!! decision for ${date}: ${plan.kind} party=${plan.partySize}`)
+        if (!plan) {
+            // Item 5: log WHY decide() returned null. Helps understand "we
+            // saw HI=3 GP=2 but didn't fire" — useful for tuning party-target
+            // configs and detecting "we should have fired but didn't."
+            const need = decideOpts.partyTargets?.[decideOpts.partyTargets.length - 1] || 6
+            const total = (hiRemain || 0) + (gpRemain || 0)
+            const reason = total < need
+                ? `total ${total} < smallest party target ${need}`
+                : hiRemain === 0 && gpRemain === 0
+                    ? 'both trailheads at zero'
+                    : 'split infeasible (likely gp > GP_CAP)'
+            session.write('decision_skipped', { date, hi: hiRemain, gp: gpRemain, reason })
+            return
+        }
+        // Item D: correlation ID per fire. Every event in this fire carries
+        // the same fireId so post-mortem `jq` can reconstruct the sequence.
+        const fireId = randomUUID().slice(0, 8)
+        log.info(`!! decision for ${date} [fire=${fireId}]: ${plan.kind} party=${plan.partySize}`)
         for (const s of plan.shots) log.info(`   shot: acct${s.accountIndex} ${s.name} party=${s.party}`)
-        session.write('decision', { date, plan: { kind: plan.kind, partySize: plan.partySize, shots: plan.shots } })
+        session.write('decision', { fireId, date, plan: { kind: plan.kind, partySize: plan.partySize, shots: plan.shots } })
 
         await pushNtfy(
             `LYV plan firing: ${plan.kind} party=${plan.partySize} on ${date}`,
@@ -415,10 +590,18 @@ async function cmdWatchAuto({
         const shotPromises = plan.shots.map(async (s) => {
             const tag = `[shot acct${s.accountIndex} ${s.divisionId}]`
             const warmer = findWarmer(s)
+            // Shots from decide() carry name + divisionId + nameTokens spread
+            // from the HI/GP target constants. Pass the full target into the
+            // row finder.
+            const shotTarget = {
+                divisionId: s.divisionId,
+                name: s.name,
+                nameTokens: s.nameTokens,
+            }
             try {
                 if (warmer) {
                     log.info(`${tag} using warm hot path (warmer pinned at party=${warmer.partySize}, plan party=${s.party})`)
-                    const r = await warmer.hot(s.name, date)
+                    const r = await warmer.hot(shotTarget, date)
                     return { ...r, shot: s }
                 } else {
                     log.info(`${tag} cold launch`)
@@ -426,6 +609,7 @@ async function cmdWatchAuto({
                         permitId: config.permitId,
                         divisionId: s.divisionId,
                         divisionName: s.name,
+                        divisionTokens: s.nameTokens,
                         date,
                         partySize: s.party,
                         accountIndex: s.accountIndex,
@@ -467,6 +651,7 @@ async function cmdWatchAuto({
                 : `❌ ALL FAILED — watcher will keep polling`
         log.info(summary)
         session.write('fire_results', {
+            fireId,
             date,
             allHeld,
             allFailed,
@@ -575,17 +760,84 @@ async function cmdWatchAuto({
         if (now - lastHeartbeatAt >= HEARTBEAT_MS) {
             lastHeartbeatAt = now
             const uptimeMin = Math.floor((now - sessionStart) / 60000)
+
+            // Drift watchdog: every heartbeat we also run verify-config in a
+            // separate headless context. If rec.gov renames a trailhead, the
+            // alarm fires here — hours before race-time — instead of at fire
+            // time when it's too late. Skipped in simulate mode (tokens point
+            // at Cottonwood; verify against real LYV is misleading there).
+            let verifyLine = '_(skipped in simulate mode)_'
+            let verifyOk = true
+            if (!simulate) {
+                try {
+                    const verifyResult = await verifyConfigOnce({
+                        permitId: config.permitId,
+                        date: config.targetDates[0],
+                        partySize: config.partySize,
+                        targets: [HI_TARGET, GP_TARGET],
+                        log: { info: () => {}, warn: log.warn, error: log.error },
+                    })
+                    verifyOk = verifyResult.ok
+                    verifyLine = verifyOk
+                        ? `OK (${verifyResult.perTarget.map(t => `${t.divisionId}:${t.strategy}`).join(', ')})`
+                        : `**DRIFT — ${verifyResult.errors.join('; ')}**`
+                    session.write('verify_config', verifyResult)
+                } catch (err) {
+                    verifyLine = `verify-config errored: ${err.message}`
+                    verifyOk = false
+                }
+            }
+
+            // Outbox flush: retry any Discord pushes that previously failed.
+            // Bounded by current outbox depth; runs before this heartbeat's
+            // push so a green flush drops the warning flag in flags below.
+            let outboxFlush = null
+            try {
+                outboxFlush = await outbox.flush(rawDiscordSend, { info: log.info })
+                if (outboxFlush.sent > 0) log.info(`Outbox flush: sent ${outboxFlush.sent}, ${outboxFlush.queueDepth} still queued`)
+            } catch (err) {
+                log.warn(`Outbox flush errored: ${err.message}`)
+            }
+
+            // Item 3: compute anomaly flags so one glance at the heartbeat tells
+            // you if it's healthy or not. Without this you'd have to read every
+            // line carefully — the 06-12 race had ~13 heartbeats and we didn't
+            // notice anything was off until 7am.
+            const flags = []
+            if (!verifyOk) flags.push('config_drift')
+            if (consecutiveAllFail > 0) flags.push(`consec_fail=${consecutiveAllFail}`)
+            if (checker.backoffMs > 0) flags.push(`backoff=${checker.backoffMs}ms`)
+            if (discordTelemetry.consecutiveFailures >= 2) {
+                flags.push(`discord_failing=${discordTelemetry.consecutiveFailures}`)
+            }
+            if (outbox.depth() > 0) flags.push(`outbox_depth=${outbox.depth()}`)
+            const statusEmoji = flags.length === 0 ? '🟢' : '🟡'
+
             const msg = [
-                '💓 **watch-auto heartbeat**',
+                `💓 **watch-auto heartbeat** ${statusEmoji}`,
                 `**Uptime:** ${uptimeMin} min`,
                 `**Polls:** ${pollCount}`,
                 `**Last snapshot:** ${lastSnapshotSummary}`,
                 `**Consec failures:** ${consecutiveAllFail}`,
                 `**Backoff:** ${checker.backoffMs}ms`,
-                `Still watching — no opening yet (or last fire pending).`,
-            ].join('\n')
+                `**Config verify:** ${verifyLine}`,
+                `**Discord push:** ${discordTelemetry.sent} sent, ${discordTelemetry.failed} failed (last status ${discordTelemetry.lastStatusCode ?? '-'})`,
+                flags.length
+                    ? `**Flags:** \`${flags.join(', ')}\``
+                    : `Still watching — no opening yet (or last fire pending).`,
+                verifyOk
+                    ? ''
+                    : `🚨 **VERIFY-CONFIG DRIFTED.** Run \`node permit-bot/permit-bot.mjs verify-config\` and update decision.mjs tokens BEFORE the next release.`,
+            ].filter(Boolean).join('\n')
             await discordPush(msg)
-            session.write('heartbeat', { pollCount, uptimeMin, lastSnapshotSummary })
+            session.write('heartbeat', {
+                pollCount,
+                uptimeMin,
+                lastSnapshotSummary,
+                verifyOk,
+                flags,
+                discord: { ...discordTelemetry },
+            })
         }
 
         if (firedThisRun) break
@@ -692,6 +944,8 @@ const kv = Object.fromEntries(
                 await cmdCheckSession({ accountIndex }); break
             case 'probe':
                 await cmdProbe(); break
+            case 'verify-config':
+                await cmdVerifyConfig(); break
             case 'test-cart':
                 await cmdTestCart({
                     accountIndex,
@@ -766,6 +1020,7 @@ const kv = Object.fromEntries(
   node permit-bot/permit-bot.mjs login [--account=N]              # interactive rec.gov login (default account=1)
   node permit-bot/permit-bot.mjs check-session [--account=N]      # verify saved login still works
   node permit-bot/permit-bot.mjs probe                             # one-shot availability snapshot
+  node permit-bot/permit-bot.mjs verify-config                     # confirm trailhead tokens still match rec.gov DOM
   node permit-bot/permit-bot.mjs watch                             # poll continuously, notify only
   node permit-bot/permit-bot.mjs watch --auto-grab                 # poll continuously, fire CartBot on hit
   node permit-bot/permit-bot.mjs test-cart [--account=N]           # dry-run cart flow (no clicks)
