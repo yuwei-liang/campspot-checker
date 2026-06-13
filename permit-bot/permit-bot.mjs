@@ -436,6 +436,35 @@ async function cmdWatchAuto({
     // launch, not immediately (otherwise it doubles up with the startup ping).
     let lastHeartbeatAt = Date.now()
 
+    // Per-heartbeat window stats: every poll bumps the right bucket per
+    // (date, division). At heartbeat fire we render a summary and reset.
+    // Tracks what we couldn't see in the prior single-snapshot heartbeat:
+    // how the cell flapped between null/0/>0 during the window.
+    const windowStats = new Map() // key: `${date}|${div}` -> stats
+    const ensureStats = (key) => {
+        if (!windowStats.has(key)) {
+            windowStats.set(key, {
+                nullCount: 0,
+                zeroCount: 0,
+                nonZeroCount: 0,
+                peakV: 0,
+                peakAt: null,
+                transitions: 0,
+                lastState: null,
+            })
+        }
+        return windowStats.get(key)
+    }
+    const stateOf = (v) => v == null ? 'null' : v === 0 ? 'zero' : 'pos'
+    // Format ISO ts as HH:MM:SS in America/Los_Angeles for at-a-glance reading.
+    const formatPT = (iso) => new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+    }).format(new Date(iso))
+
     log.info(`watch-auto: targets=LYV (HI+GP), dates=${config.targetDates.join(', ')}, poll=${config.pollIntervalMs}ms, preWarm=${preWarm}`)
     log.info(`Session log: ${session.filePath}`)
     session.write('startup', {
@@ -739,6 +768,27 @@ async function cmdWatchAuto({
             log.info(`poll ${pollCount} ok | ${summary}`)
             session.write('poll', { count: pollCount, byDate, durationMs: Date.now() - tickStart })
 
+            // Window stats: bump per (date, division). Captures null/0/>0
+            // distribution, peak remaining, and transitions for the heartbeat.
+            const nowIso = new Date().toISOString()
+            for (const [d, v] of Object.entries(byDate)) {
+                for (const [divName, val] of [['hi', v.hi], ['gp', v.gp]]) {
+                    const stats = ensureStats(`${d}|${divName}`)
+                    const cur = stateOf(val)
+                    if (cur === 'null') stats.nullCount++
+                    else if (cur === 'zero') stats.zeroCount++
+                    else stats.nonZeroCount++
+                    if (val != null && val > stats.peakV) {
+                        stats.peakV = val
+                        stats.peakAt = nowIso
+                    }
+                    if (stats.lastState !== null && stats.lastState !== cur) {
+                        stats.transitions++
+                    }
+                    stats.lastState = cur
+                }
+            }
+
             for (const [date, v] of Object.entries(byDate)) {
                 // For testing: --fake-hi/--fake-gp override the snapshot values
                 // (e.g. force a split scenario when real numbers say solo).
@@ -813,11 +863,43 @@ async function cmdWatchAuto({
             if (outbox.depth() > 0) flags.push(`outbox_depth=${outbox.depth()}`)
             const statusEmoji = flags.length === 0 ? '🟢' : '🟡'
 
+            // Per-cell window summary. One line per (date, division) showing
+            // how the API ticked across the heartbeat window. Order: dates by
+            // target list, divisions HI then GP.
+            const datesForWindow = config.targetDates.length
+                ? [...config.targetDates].sort()
+                : [...new Set([...windowStats.keys()].map(k => k.split('|')[0]))].sort()
+            const windowLines = []
+            for (const d of datesForWindow) {
+                for (const divName of ['hi', 'gp']) {
+                    const key = `${d}|${divName}`
+                    const stats = windowStats.get(key)
+                    const label = `${d.slice(5)} ${divName.toUpperCase()}`
+                    if (!stats) {
+                        windowLines.push(`\`${label}\`: no polls this window`)
+                        continue
+                    }
+                    const total = stats.nullCount + stats.zeroCount + stats.nonZeroCount
+                    const peakStr = stats.peakV > 0
+                        ? `peak=${stats.peakV} at ${formatPT(stats.peakAt)} PT`
+                        : 'no stock'
+                    windowLines.push(
+                        `\`${label}\`: ${stats.nonZeroCount}>0 / ${stats.zeroCount}=0 / ${stats.nullCount}— ` +
+                        `(of ${total}) · ${stats.transitions} transitions · ${peakStr}`
+                    )
+                }
+            }
+            // Reset the window for the next heartbeat.
+            windowStats.clear()
+
             const msg = [
                 `💓 **watch-auto heartbeat** ${statusEmoji}`,
                 `**Uptime:** ${uptimeMin} min`,
                 `**Polls:** ${pollCount}`,
                 `**Last snapshot:** ${lastSnapshotSummary}`,
+                `**API window (last ${Math.round(HEARTBEAT_MS / 60000)} min):**`,
+                ...windowLines.map(l => `  ${l}`),
+                `_\`—\` = rec.gov suppressed the cell from the API payload (treated as 0 for firing). Common, not an error._`,
                 `**Consec failures:** ${consecutiveAllFail}`,
                 `**Backoff:** ${checker.backoffMs}ms`,
                 `**Config verify:** ${verifyLine}`,
@@ -834,6 +916,7 @@ async function cmdWatchAuto({
                 pollCount,
                 uptimeMin,
                 lastSnapshotSummary,
+                windowSummary: windowLines,
                 verifyOk,
                 flags,
                 discord: { ...discordTelemetry },
