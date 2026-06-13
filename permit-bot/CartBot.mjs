@@ -1061,16 +1061,13 @@ export async function warmCart({
             match = await findCell()
             if (match) log.info(`${tag} OVERCAP recovered: matched ${JSON.stringify(match.label)} at party=${currentParty}`)
         }
-        let advances = 0
-        while (!match && advances < 6) {
-            const next = page.getByRole('button', { name: /next 5 days/i }).first()
-            if (await next.count() === 0) break
-            await next.click()
-            await page.waitForTimeout(400)
-            advances++
-            match = await findCell()
-            if (!match && await tryOvercapAdjust()) match = await findCell()
-        }
+        // NOTE: previously this fell into a "Next 5 Days" advance loop (up to
+        // 6×, ~2.4s) when findCell returned null. For T+7/T+8 race dates the
+        // target weekday is always in the default visible window, so the loop
+        // never actually helped — it just wasted time on failure and walked the
+        // calendar past the target on the warm page. Removed 06-13. If the cell
+        // is null, the warm DOM is stale; the reload recovery below is the
+        // right answer.
         // STALE-DOM RECOVERY (06-13 race): API said stock opened but every cell
         // in the warm DOM still shows "No online reservations" — the SPA didn't
         // repaint after the 7am flip. Reload once and re-look.
