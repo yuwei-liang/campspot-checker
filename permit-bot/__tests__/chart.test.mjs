@@ -3,7 +3,7 @@
 // extracted from polls, null transitions create gaps, the SVG contains
 // expected markers (release line, labels for transitions, peak in subtitle).
 
-import { renderSvg, resolveDate, runChartCommand } from '../chart.mjs'
+import { renderSvg, resolveDate, runChartCommand, stepSegments } from '../chart.mjs'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -21,6 +21,84 @@ const poll = (utcHHMMSS, hi, gp) => ({
     event: 'poll',
     ts: baseTs(utcHHMMSS),
     byDate: { [DATE]: { hi, gp } },
+})
+
+describe('stepSegments (regression: diagonal instead of step at value changes)', () => {
+    // Identity scales so test asserts on raw input values.
+    const idX = (t) => t
+    const idY = (v) => v
+
+    test('value change at point N produces vertical step at x_N, not diagonal', () => {
+        // Polls: t=0 hi=0, t=10 hi=10. Step chart should produce a polyline
+        // that touches (0,0) → (10,0) → (10,10) → ... — the line must go
+        // STRAIGHT UP at x=10, then horizontally right. NOT diagonally from
+        // (0,0) to (10,10) — that's what was rendering wrong in the chart.
+        const points = [
+            { ts: 0, hi: 0, gp: 0 },
+            { ts: 10, hi: 10, gp: 0 },
+        ]
+        const segs = stepSegments(points, 'HI', idX, idY)
+        expect(segs.length).toBe(1)
+        const path = segs[0]
+        // The path MUST contain the point (10, 0) — that's the corner of the
+        // vertical step. Without it, the path goes diagonally (this was the bug).
+        const hasCorner = path.some(p => p.x === 10 && p.y === 0)
+        expect(hasCorner).toBe(true)
+        // And it must reach (10, 10) so the dot at the new value sits on the line.
+        const reachesNewValue = path.some(p => p.x === 10 && p.y === 10)
+        expect(reachesNewValue).toBe(true)
+    })
+
+    test('drop in value: (10, 10) → (20, 4) produces vertical drop at x=20', () => {
+        const points = [
+            { ts: 10, hi: 10, gp: 0 },
+            { ts: 20, hi: 4, gp: 0 },
+        ]
+        const segs = stepSegments(points, 'HI', idX, idY)
+        const path = segs[0]
+        // Corner (20, 10) before drop must exist.
+        expect(path.some(p => p.x === 20 && p.y === 10)).toBe(true)
+        // Bottom of drop (20, 4) must exist.
+        expect(path.some(p => p.x === 20 && p.y === 4)).toBe(true)
+    })
+
+    test('three points 0→10→10: line must be vertical at x_release (NOT diagonal)', () => {
+        // The real bug. With three points [(0, 0), (10, 10), (20, 10)],
+        // the previous buggy implementation produced a path like
+        //   (0,0) → (10,0) → (20,10)
+        // — diagonally connecting (10,0) to (20,10) instead of stepping up at
+        // x=10. Visually: the line starts climbing diagonally from the
+        // zero baseline at the previous poll's x and reaches y=10 at the
+        // NEXT poll's x, never sitting on the actual release dot at (10,10).
+        const points = [
+            { ts: 0, hi: 0, gp: 0 },
+            { ts: 10, hi: 10, gp: 0 },
+            { ts: 20, hi: 10, gp: 0 },
+        ]
+        const segs = stepSegments(points, 'HI', idX, idY)
+        const path = segs[0]
+        // The path must hit (10, 0) AND (10, 10) so the step is vertical at
+        // x=10. Without the second point the line is diagonal — the bug.
+        expect(path.some(p => p.x === 10 && p.y === 0)).toBe(true)
+        expect(path.some(p => p.x === 10 && p.y === 10)).toBe(true)
+        // And no path point should lie strictly between (10, 0) and (20, 10)
+        // along the diagonal — i.e. no point with 10<x<20 unless y=10.
+        for (const p of path) {
+            if (p.x > 10 && p.x < 20) {
+                expect(p.y).toBe(10)
+            }
+        }
+    })
+
+    test('null value splits into separate segments (existing behavior)', () => {
+        const points = [
+            { ts: 0, hi: 5, gp: 0 },
+            { ts: 10, hi: null, gp: 0 },
+            { ts: 20, hi: 5, gp: 0 },
+        ]
+        const segs = stepSegments(points, 'HI', idX, idY)
+        expect(segs.length).toBe(2)
+    })
 })
 
 describe('renderSvg', () => {

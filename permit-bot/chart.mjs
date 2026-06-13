@@ -57,13 +57,20 @@ function extractTrack(allEvents, date) {
 }
 
 // Step path with explicit null breaks. Returns array of polyline segments,
-// each a list of {x, y} pairs.
-function stepSegments(points, kind, scaleX, scaleY) {
+// each a list of {x, y} pairs. Exported for testing.
+//
+// Step-before convention: when value changes from v_prev to v_curr between
+// polls at x_prev and x_curr, the line stays flat at v_prev until x_curr,
+// then steps VERTICALLY to v_curr at x_curr. This requires both (x_curr,
+// v_prev) and (x_curr, v_curr) in the path. Without the second point the
+// line is diagonal — the bug visible at the 06:59:30 release.
+export function stepSegments(points, kind, scaleX, scaleY) {
     const segments = []
     let cur = null
+    let prevY = null
     for (let i = 0; i < points.length; i++) {
         const v = kind === 'HI' ? points[i].hi : points[i].gp
-        if (v == null) { cur = null; continue }
+        if (v == null) { cur = null; prevY = null; continue }
         const x = scaleX(points[i].ts)
         const y = scaleY(v)
         const nextTs = i + 1 < points.length ? points[i + 1].ts : points[i].ts
@@ -71,8 +78,13 @@ function stepSegments(points, kind, scaleX, scaleY) {
         if (cur == null) {
             cur = [{ x, y }]
             segments.push(cur)
+        } else if (y !== prevY) {
+            // Value changed — insert the vertical step at this poll's x.
+            cur.push({ x, y })
         }
+        // Hold the value flat until the next poll's x.
         cur.push({ x: nextX, y })
+        prevY = y
     }
     return segments
 }
