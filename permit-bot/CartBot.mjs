@@ -153,6 +153,60 @@ export async function findRowWithReloadRecovery(page, target, reloadAndResetup, 
     return { ...result, didReload }
 }
 
+// Pure DOM cell-finder. Locates the bookable cell in `row` for `date`. Returns
+// { handle, label, txt } or null. Exported so the reload-recovery wrapper can
+// be tested without dragging in the whole hot() closure.
+export async function findBookableCellInRow(row, date) {
+    const [y, m, d] = date.split('-').map(Number)
+    const weekday = new Date(Date.UTC(y, m - 1, d))
+        .toLocaleString('en-US', { weekday: 'short', timeZone: 'UTC' })
+        .toUpperCase()
+    const datePattern = new RegExp(`\\b${weekday}\\s+${d}\\b`)
+    const cells = await row.locator('button').all()
+    for (const c of cells) {
+        const label = (await c.getAttribute('aria-label')) || ''
+        if (!datePattern.test(label)) continue
+        if (/no online reservations/i.test(label)) continue
+        const txt = (await c.innerText().catch(() => '')).trim()
+        if (txt === '0' || txt === '') continue
+        return { handle: c, label, txt }
+    }
+    return null
+}
+
+// 06-13 fix: when the API says stock opened but the warm DOM still shows every
+// cell as "No online reservations" (rec.gov's SPA didn't repaint after the 7am
+// flip), reload once and re-look. `refindRow` is called after the reload to
+// rebind the row locator against the fresh DOM.
+//
+// Returns { match, didReload, row } where `row` is the post-reload row when we
+// reloaded (caller may want to rebind), else the original row.
+export async function findCellWithReloadRecovery({
+    page,
+    row,
+    date,
+    reloadAndResetup,
+    refindRow,
+    log = console,
+}) {
+    let match = await findBookableCellInRow(row, date)
+    if (match) return { match, didReload: false, row }
+    log.warn?.('hot: no bookable cell on warm DOM — reloading once (stale-DOM recovery)')
+    try {
+        await reloadAndResetup()
+    } catch (err) {
+        log.warn?.(`hot: stale-DOM reload threw: ${err.message}`)
+        return { match: null, didReload: false, row }
+    }
+    const freshRow = await refindRow()
+    if (!freshRow) {
+        log.warn?.('hot: row not found after stale-DOM reload')
+        return { match: null, didReload: true, row: null }
+    }
+    match = await findBookableCellInRow(freshRow, date)
+    return { match, didReload: true, row: freshRow }
+}
+
 // Legacy name-based finder. Kept as a SECOND-CHANCE fallback only — robust
 // matching now lives in findRowByTokens. Callers should prefer tokens.
 async function findTrailheadRowByName(page, divisionName) {
@@ -928,7 +982,7 @@ export async function warmCart({
             { info: (m) => log.info?.(`${tag} ${m}`), warn: (m) => log.warn?.(`${tag} ${m}`) },
         )
         mark('row_lookup')
-        const row = rowResult.row
+        let row = rowResult.row
         if (!row) {
             await page.screenshot({ path: screenshotPath('hot-fail-no-row'), fullPage: true }).catch(() => {})
             const tracePath = path.resolve(`./permit-bot/.traces/hot-fail-${Date.now()}-acct${accountIndex}-no-row.zip`)
@@ -1016,6 +1070,33 @@ export async function warmCart({
             advances++
             match = await findCell()
             if (!match && await tryOvercapAdjust()) match = await findCell()
+        }
+        // STALE-DOM RECOVERY (06-13 race): API said stock opened but every cell
+        // in the warm DOM still shows "No online reservations" — the SPA didn't
+        // repaint after the 7am flip. Reload once and re-look.
+        // Skip when the row lookup itself just reloaded (avoid double-reload).
+        if (!match && !rowResult.didReload) {
+            mark('stale_dom_reload_start')
+            const recovered = await findCellWithReloadRecovery({
+                page,
+                row,
+                date,
+                reloadAndResetup,
+                refindRow: async () => {
+                    const r = await findRowWithReloadRecovery(
+                        page, target, async () => {},
+                        { info: (m) => log.info?.(`${tag} ${m}`), warn: (m) => log.warn?.(`${tag} ${m}`) },
+                    )
+                    return r.row
+                },
+                log: { info: (m) => log.info?.(`${tag} ${m}`), warn: (m) => log.warn?.(`${tag} ${m}`) },
+            })
+            mark('stale_dom_reload_done')
+            if (recovered.row) row = recovered.row
+            if (recovered.match) {
+                match = recovered.match
+                log.info(`${tag} stale-DOM recovery: matched cell ${JSON.stringify(match.label)} after reload`)
+            }
         }
         if (!match) {
             await page.screenshot({ path: screenshotPath('hot-fail-no-cell'), fullPage: true }).catch(() => {})
