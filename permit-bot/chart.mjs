@@ -99,6 +99,171 @@ function peakTotal(points) {
     return peak
 }
 
+const HI_COLOR = '#1976d2'
+const GP_COLOR = '#2e7d32'
+const HI_LABEL = 'Happy Isles→LYV remaining'
+const GP_LABEL = 'Glacier Point→LYV remaining'
+
+// Build a Chart.js v4 config for the API tick history. Step chart, real null
+// gaps, annotated release line, and pointRadius arrays so transitions stand
+// out as labeled dots while normal polls render as invisible vertices. The
+// browser renders it — no more hand-rolled SVG / step-chart bugs.
+export function buildChartConfig({ events, date, fromIso, toIso, releaseTimeIso = null }) {
+    const fromMs = typeof fromIso === 'number' ? fromIso : Date.parse(fromIso)
+    const toMs = typeof toIso === 'number' ? toIso : Date.parse(toIso)
+    const inWindow = events.filter(ev => {
+        const t = Date.parse(ev.ts)
+        return t >= fromMs && t <= toMs
+    })
+    const { points, events: transitions } = extractTrack(inWindow, date)
+
+    // Build {x: epochMs, y: value|null} arrays + per-point radius arrays.
+    // Transitions get a visible dot; everything else hides at radius 0.
+    const transitionSet = new Set(transitions.map(t => `${t.kind}|${t.ts}`))
+    const buildSeries = (kind) => {
+        const data = []
+        const radii = []
+        const colors = []
+        for (const p of points) {
+            const v = kind === 'HI' ? p.hi : p.gp
+            data.push({ x: p.ts * 1000, y: v ?? null })
+            const isTransition = transitionSet.has(`${kind}|${p.ts}`)
+            radii.push(isTransition ? 5 : 0)
+            colors.push(isTransition ? (kind === 'HI' ? HI_COLOR : GP_COLOR) : 'transparent')
+        }
+        return { data, radii, colors }
+    }
+    const hi = buildSeries('HI')
+    const gp = buildSeries('GP')
+
+    // Default release marker: 06:59:30 PT on the session day (= fromMs's
+    // PT calendar date). Caller can override via releaseTimeIso.
+    let releaseMs = null
+    if (releaseTimeIso) {
+        releaseMs = Date.parse(releaseTimeIso)
+    } else if (fromMs) {
+        const ptDate = ptCalendarDate(new Date(fromMs).toISOString())
+        releaseMs = Date.parse(`${ptDate}T06:59:30-07:00`)
+    }
+    const annotations = {}
+    if (releaseMs != null) {
+        annotations.releaseLine = {
+            type: 'line',
+            xMin: releaseMs,
+            xMax: releaseMs,
+            borderColor: '#d32f2f',
+            borderWidth: 1.5,
+            borderDash: [4, 4],
+            label: {
+                display: true,
+                content: 'release',
+                position: 'start',
+                color: '#d32f2f',
+                backgroundColor: 'rgba(255,255,255,0.9)',
+                font: { weight: 'bold', size: 11 },
+            },
+        }
+    }
+    // Annotate each transition with a small label box pointing at the dot.
+    for (const t of transitions) {
+        annotations[`label_${t.kind}_${t.ts}`] = {
+            type: 'label',
+            xValue: t.ts * 1000,
+            yValue: t.v,
+            content: [`${t.kind}=${t.v}`],
+            backgroundColor: 'rgba(255,255,255,0.95)',
+            borderColor: t.kind === 'HI' ? HI_COLOR : GP_COLOR,
+            borderWidth: 1,
+            borderRadius: 3,
+            color: t.kind === 'HI' ? HI_COLOR : GP_COLOR,
+            font: { size: 10, weight: 500 },
+            padding: { top: 2, bottom: 2, left: 6, right: 6 },
+            yAdjust: -22,
+        }
+    }
+
+    const peak = peakTotal(points)
+
+    return {
+        type: 'line',
+        data: {
+            datasets: [
+                {
+                    label: HI_LABEL,
+                    data: hi.data,
+                    borderColor: HI_COLOR,
+                    backgroundColor: HI_COLOR,
+                    stepped: 'before',
+                    spanGaps: false,
+                    pointRadius: hi.radii,
+                    pointBackgroundColor: hi.colors,
+                    pointBorderColor: hi.colors,
+                    borderWidth: 2,
+                    tension: 0,
+                },
+                {
+                    label: GP_LABEL,
+                    data: gp.data,
+                    borderColor: GP_COLOR,
+                    backgroundColor: GP_COLOR,
+                    stepped: 'before',
+                    spanGaps: false,
+                    pointRadius: gp.radii,
+                    pointBackgroundColor: gp.colors,
+                    pointBorderColor: gp.colors,
+                    borderWidth: 2,
+                    tension: 0,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'nearest', intersect: false, axis: 'x' },
+            scales: {
+                x: {
+                    type: 'time',
+                    min: fromMs,
+                    max: toMs,
+                    time: {
+                        unit: 'minute',
+                        stepSize: 5,
+                        displayFormats: { minute: 'HH:mm' },
+                        tooltipFormat: 'HH:mm:ss',
+                    },
+                    adapters: { date: { zone: 'America/Los_Angeles' } },
+                },
+                y: {
+                    beginAtZero: true,
+                    suggestedMax: Math.max(11, peak.v + 1),
+                    title: { display: true, text: 'remaining' },
+                },
+            },
+            plugins: {
+                title: {
+                    display: true,
+                    text: `rec.gov API tick history — ${date} LYV`,
+                    font: { size: 16 },
+                },
+                subtitle: {
+                    display: true,
+                    text: peak.v > 0
+                        ? `${points.length} polls · peak hi+gp=${peak.v} · gaps = API returned null (— in heartbeat)`
+                        : `${points.length} polls · no concurrent stock · gaps = API returned null (— in heartbeat)`,
+                    font: { size: 11 },
+                    color: '#666',
+                    padding: { bottom: 12 },
+                },
+                legend: { position: 'top' },
+                tooltip: { mode: 'nearest', intersect: false },
+                annotation: { annotations },
+            },
+        },
+        _peak: peak,
+        _pollsCount: points.length,
+    }
+}
+
 // Render a step-line chart of HI + GP for `date` across the [fromTs, toTs]
 // window. `events` is the raw session event stream — extractTrack uses
 // startup events as session boundaries (resets prev tracking), so passing
@@ -254,10 +419,11 @@ export function renderHtmlReport({ sessionEvents, date, fromIso, toIso, sessionP
     const heartbeats = sessionEvents.filter(e => e.event === 'heartbeat')
     const startup = sessionEvents.find(e => e.event === 'startup')
 
-    // Pass the full event stream (not just polls) so startup events act as
-    // session-boundary resets in transition detection. Multi-session merges
-    // depend on this.
-    const svg = renderSvg({ events: sessionEvents, date, fromIso, toIso })
+    // Chart.js v4 config. Browser renders it — proper step charts, real null
+    // gaps via spanGaps:false, annotation plugin for the release marker, no
+    // hand-rolled SVG bugs. Pass the full event stream so startup events act
+    // as session-boundary resets in transition detection.
+    const chartConfig = buildChartConfig({ events: sessionEvents, date, fromIso, toIso })
 
     const fireRows = fires.map(f => {
         const acct = f.results?.[0]
@@ -288,11 +454,15 @@ export function renderHtmlReport({ sessionEvents, date, fromIso, toIso, sessionP
 <head>
 <meta charset="utf-8">
 <title>permit-bot session report — ${date}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 <style>
     body { font-family: -apple-system, sans-serif; max-width: 1500px; margin: 20px auto; padding: 0 20px; color: #222; }
     h1 { font-size: 20px; margin-bottom: 4px; }
     h2 { font-size: 16px; margin-top: 28px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
     .meta { color: #666; font-size: 12px; margin-bottom: 16px; }
+    .chart-wrap { position: relative; height: 480px; margin: 16px 0 28px; background: #fafafa; border: 1px solid #eee; border-radius: 4px; padding: 8px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #eee; }
     th { background: #f5f5f5; }
@@ -312,7 +482,17 @@ export function renderHtmlReport({ sessionEvents, date, fromIso, toIso, sessionP
     · ${heartbeats.length} heartbeats
     ${startup ? `· targets: ${(startup.targets || []).join(', ')}` : ''}
 </div>
-${svg}
+<div class="chart-wrap"><canvas id="tickChart"></canvas></div>
+<script>
+    // Wait until Chart.js + plugins are loaded before instantiating.
+    window.addEventListener('load', () => {
+        if (window.Chart && window['chartjs-plugin-annotation']) {
+            Chart.register(window['chartjs-plugin-annotation']);
+        }
+        const config = ${JSON.stringify(chartConfig)};
+        new Chart(document.getElementById('tickChart').getContext('2d'), config);
+    });
+</script>
 <h2>Fires (${fires.length})</h2>
 ${fires.length > 0 ? `<table>
     <tr><th>ts</th><th>fireId</th><th>date</th><th>outcome</th><th>API→bookClick</th><th>reload</th></tr>

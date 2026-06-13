@@ -3,7 +3,7 @@
 // extracted from polls, null transitions create gaps, the SVG contains
 // expected markers (release line, labels for transitions, peak in subtitle).
 
-import { renderSvg, resolveDate, runChartCommand, stepSegments } from '../chart.mjs'
+import { renderSvg, resolveDate, runChartCommand, stepSegments, buildChartConfig } from '../chart.mjs'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -21,6 +21,63 @@ const poll = (utcHHMMSS, hi, gp) => ({
     event: 'poll',
     ts: baseTs(utcHHMMSS),
     byDate: { [DATE]: { hi, gp } },
+})
+
+describe('buildChartConfig (Chart.js config produced for the browser to render)', () => {
+    const polls = [
+        { event: 'poll', ts: '2026-06-13T13:55:00.000Z', byDate: { '2026-06-20': { hi: 0, gp: 0 } } },
+        { event: 'poll', ts: '2026-06-13T13:59:30.421Z', byDate: { '2026-06-20': { hi: 10, gp: 4 } } },
+        { event: 'poll', ts: '2026-06-13T14:00:11.000Z', byDate: { '2026-06-20': { hi: null, gp: null } } },
+    ]
+    const date = '2026-06-20'
+    const fromIso = '2026-06-13T13:50:00Z'
+    const toIso = '2026-06-13T14:35:00Z'
+
+    test('returns a line-chart config with one HI and one GP dataset', () => {
+        const cfg = buildChartConfig({ events: polls, date, fromIso, toIso })
+        expect(cfg.type).toBe('line')
+        expect(cfg.data.datasets.length).toBe(2)
+        expect(cfg.data.datasets[0].label).toMatch(/Happy Isles/i)
+        expect(cfg.data.datasets[1].label).toMatch(/Glacier Point/i)
+    })
+
+    test('datasets use stepped="before" — Chart.js step chart, no diagonals', () => {
+        const cfg = buildChartConfig({ events: polls, date, fromIso, toIso })
+        for (const ds of cfg.data.datasets) {
+            expect(ds.stepped).toBe('before')
+        }
+    })
+
+    test('null poll values appear as null in the dataset data (real gaps, not 0)', () => {
+        const cfg = buildChartConfig({ events: polls, date, fromIso, toIso })
+        const hi = cfg.data.datasets[0]
+        // The third poll has hi=null — that point's y must be null.
+        const nullPoint = hi.data.find(p => p.x === Date.parse('2026-06-13T14:00:11.000Z'))
+        expect(nullPoint).toBeDefined()
+        expect(nullPoint.y).toBeNull()
+        expect(hi.spanGaps).toBe(false)
+    })
+
+    test('release-time marker rendered via annotations plugin', () => {
+        const cfg = buildChartConfig({ events: polls, date, fromIso, toIso })
+        const annotations = cfg.options?.plugins?.annotation?.annotations
+        expect(annotations).toBeDefined()
+        const releaseLine = Object.values(annotations).find(a => a.type === 'line')
+        expect(releaseLine).toBeDefined()
+        // Vertical at the 06:59:30 PT release time.
+        const expectedTs = Date.parse('2026-06-13T13:59:30Z')
+        expect(releaseLine.xMin).toBe(expectedTs)
+        expect(releaseLine.xMax).toBe(expectedTs)
+    })
+
+    test('zero→positive transitions get highlighted points (pointRadius array)', () => {
+        const cfg = buildChartConfig({ events: polls, date, fromIso, toIso })
+        const hi = cfg.data.datasets[0]
+        // Default pointRadius=0; the release transition gets a visible radius.
+        expect(Array.isArray(hi.pointRadius)).toBe(true)
+        const releaseIdx = hi.data.findIndex(p => p.x === Date.parse('2026-06-13T13:59:30.421Z'))
+        expect(hi.pointRadius[releaseIdx]).toBeGreaterThan(0)
+    })
 })
 
 describe('stepSegments (regression: diagonal instead of step at value changes)', () => {
@@ -255,11 +312,15 @@ describe('runChartCommand window selection (regression: empty chart bug)', () =>
             outDir: tmp,
         })
         const html = readFileSync(reportPath, 'utf-8')
-        // Events from BOTH sessions should appear.
-        expect(html).toContain('HI=10') // session A
-        expect(html).toContain('GP=4')  // session A
-        expect(html).toContain('HI=4 @ 07:00:49') // session B echo
-        expect(html).toContain('GP=2 @ 07:04:04') // session B echo
+        // Events from BOTH sessions should appear as transition annotations in
+        // the embedded Chart.js config JSON.
+        expect(html).toContain('"HI=10"') // session A
+        expect(html).toContain('"GP=4"')  // session A
+        expect(html).toContain('"HI=4"')  // session B echo at 07:00:49
+        expect(html).toContain('"GP=2"')  // session B echo at 07:04:04
+        // And the annotation xValue must match the echo timestamps (epoch ms).
+        expect(html).toContain(String(Date.parse('2026-06-13T14:00:49.000Z'))) // HI=4 echo
+        expect(html).toContain(String(Date.parse('2026-06-13T14:04:04.000Z'))) // GP=2 echo
     })
 
     test('session and target same day still works (sanity)', async () => {
