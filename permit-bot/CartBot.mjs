@@ -938,8 +938,12 @@ export async function warmCart({
     // `target` is the trailhead descriptor: { divisionId, name, nameTokens }.
     // Back-compat: if called with a bare string for divisionName it falls
     // through to the legacy name-only finder (slow + fragile, but still works).
-    const hot = async (target, date) => {
+    const hot = async (target, date, opts = {}) => {
         const t0 = Date.now()
+        // apiSignalAt: timestamp (ms epoch) of the API poll that triggered
+        // this fire. If provided, latencyMs.apiSignalToBookClickMs surfaces
+        // the user's actual KPI ("from poll → click Book Now").
+        const apiSignalAt = opts.apiSignalAt ?? null
         // Phase-level latency capture. Each phase records the ms elapsed
         // since the previous milestone; the session log gets a precise
         // breakdown of "where the 5 seconds went" instead of just a total.
@@ -1072,6 +1076,10 @@ export async function warmCart({
         // in the warm DOM still shows "No online reservations" — the SPA didn't
         // repaint after the 7am flip. Reload once and re-look.
         // Skip when the row lookup itself just reloaded (avoid double-reload).
+        // reloadOutcome categorizes what happened: 'matched' (success after
+        // reload), 'still_null' (reload ran, cell still NR), 'row_gone' (reload
+        // wiped the row entirely), or null (no reload attempted).
+        let reloadOutcome = null
         if (!match && !rowResult.didReload) {
             mark('stale_dom_reload_start')
             const recovered = await findCellWithReloadRecovery({
@@ -1092,7 +1100,10 @@ export async function warmCart({
             if (recovered.row) row = recovered.row
             if (recovered.match) {
                 match = recovered.match
+                reloadOutcome = 'matched'
                 log.info(`${tag} stale-DOM recovery: matched cell ${JSON.stringify(match.label)} after reload`)
+            } else {
+                reloadOutcome = recovered.row ? 'still_null' : 'row_gone'
             }
         }
         if (!match) {
@@ -1102,7 +1113,7 @@ export async function warmCart({
             log.warn(`${tag} hot failed (no_matching_cell). Trace saved: ${tracePath}`)
             return {
                 ok: false, reason: 'no_matching_cell',
-                latencyMs: { total: Date.now() - t0, phases, didReload: rowResult.didReload },
+                latencyMs: { total: Date.now() - t0, phases, didReload: rowResult.didReload, reloadOutcome },
                 tracePath,
                 ...baseMeta,
             }
@@ -1161,6 +1172,12 @@ export async function warmCart({
         mark('cart_check')
 
         const totalMs = Date.now() - t0
+        // apiSignalToBookClickMs is the user's actual KPI for race timing.
+        // tBook is "ms inside hot()" — adding (t0 - apiSignalAt) covers the
+        // dispatch hop from the poll loop to this warmer's hot path.
+        const apiSignalToBookClickMs = apiSignalAt != null
+            ? (t0 - apiSignalAt) + tBook
+            : null
         return {
             ok: true,
             cartState,
@@ -1173,8 +1190,10 @@ export async function warmCart({
             latencyMs: {
                 bookClick: tBook,
                 total: totalMs,
+                apiSignalToBookClickMs,
                 phases,
                 didReload: rowResult.didReload,
+                reloadOutcome,
                 strategy: rowResult.strategy,
             },
             accountIndex,

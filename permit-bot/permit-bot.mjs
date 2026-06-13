@@ -456,6 +456,27 @@ async function cmdWatchAuto({
         return windowStats.get(key)
     }
     const stateOf = (v) => v == null ? 'null' : v === 0 ? 'zero' : 'pos'
+
+    // "Would-have-fired" shadow: for each candidate party size BELOW the
+    // current floor, count polls where decide() would have returned a plan.
+    // Lets the heartbeat answer "should I lower partyTargets?" with data
+    // instead of speculation. Tracked per (date, size); also peakTotal/date.
+    const WOULD_FIRE_SIZES = [2, 3, 4, 5]
+    const wouldFireStats = new Map() // key: date -> { sizeCounts: Map, peakTotal: {v, ts} }
+    const ensureWouldFire = (date) => {
+        if (!wouldFireStats.has(date)) {
+            wouldFireStats.set(date, {
+                sizeCounts: new Map(WOULD_FIRE_SIZES.map(s => [s, 0])),
+                peakTotal: { v: 0, ts: null },
+            })
+        }
+        return wouldFireStats.get(date)
+    }
+
+    // Fire telemetry rollup: tracks reload outcomes and apiSignalToBookClickMs
+    // across the heartbeat window. Most windows empty (no fire); the heartbeat
+    // omits the section when so.
+    const fireTelemetry = []
     // Format ISO ts as HH:MM:SS in America/Los_Angeles for at-a-glance reading.
     const formatPT = (iso) => new Intl.DateTimeFormat('en-US', {
         timeZone: 'America/Los_Angeles',
@@ -601,6 +622,11 @@ async function cmdWatchAuto({
         // Item D: correlation ID per fire. Every event in this fire carries
         // the same fireId so post-mortem `jq` can reconstruct the sequence.
         const fireId = randomUUID().slice(0, 8)
+        // apiSignalAt: timestamp of the poll that produced this decision.
+        // Within ~1ms of the actual API response — passed to hot() so it can
+        // surface apiSignalToBookClickMs (the user's actual KPI: how long
+        // from "API said yes" to "Book Now clicked").
+        const apiSignalAt = Date.now()
         log.info(`!! decision for ${date} [fire=${fireId}]: ${plan.kind} party=${plan.partySize}`)
         for (const s of plan.shots) log.info(`   shot: acct${s.accountIndex} ${s.name} party=${s.party}`)
         session.write('decision', { fireId, date, plan: { kind: plan.kind, partySize: plan.partySize, shots: plan.shots } })
@@ -630,7 +656,7 @@ async function cmdWatchAuto({
             try {
                 if (warmer) {
                     log.info(`${tag} using warm hot path (warmer pinned at party=${warmer.partySize}, plan party=${s.party})`)
-                    const r = await warmer.hot(shotTarget, date)
+                    const r = await warmer.hot(shotTarget, date, { apiSignalAt })
                     return { ...r, shot: s }
                 } else {
                     log.info(`${tag} cold launch`)
@@ -679,6 +705,21 @@ async function cmdWatchAuto({
                 ? `⚠️ PARTIAL: held ${partyAcquired}/${plan.partySize} people across ${heldCount}/${plan.shots.length} shots`
                 : `❌ ALL FAILED — watcher will keep polling`
         log.info(summary)
+        // Capture per-shot rollup for heartbeat-level fire telemetry: who
+        // reloaded, what the reload yielded, and the user's actual KPI
+        // (apiSignal → bookClick).
+        for (const r of results) {
+            fireTelemetry.push({
+                fireId,
+                date,
+                accountIndex: r.accountIndex,
+                cartState: r.cartState,
+                reason: r.reason,
+                apiSignalToBookClickMs: r.latencyMs?.apiSignalToBookClickMs ?? null,
+                didReload: r.latencyMs?.didReload ?? null,
+                reloadOutcome: r.latencyMs?.reloadOutcome ?? null,
+            })
+        }
         session.write('fire_results', {
             fireId,
             date,
@@ -686,6 +727,7 @@ async function cmdWatchAuto({
             allFailed,
             heldCount,
             partyAcquired,
+            apiSignalAt,
             results: results.map(r => ({
                 accountIndex: r.accountIndex,
                 shot: r.shot,
@@ -711,6 +753,8 @@ async function cmdWatchAuto({
                 `**Plan kind:** ${plan.kind} (target party=${plan.partySize})`,
                 `**Latency book-click:** ${r.latencyMs?.bookClick ?? '-'}ms`,
                 `**Latency total:** ${r.latencyMs?.total ?? '-'}ms`,
+                `**API→bookClick:** ${r.latencyMs?.apiSignalToBookClickMs ?? '-'}ms`,
+                `**Stale-DOM reload:** ${r.latencyMs?.reloadOutcome ? `fired → ${r.latencyMs.reloadOutcome}` : 'not needed'}`,
             ]
             await discordPush(lines.join('\n'), r.cartShot || r.postShot || null)
         }
@@ -786,6 +830,24 @@ async function cmdWatchAuto({
                         stats.transitions++
                     }
                     stats.lastState = cur
+                }
+
+                // Shadow: per candidate party size, would decide() have fired?
+                const hiNum = v.hi ?? 0
+                const gpNum = v.gp ?? 0
+                const wf = ensureWouldFire(d)
+                const total = hiNum + gpNum
+                if (total > wf.peakTotal.v) {
+                    wf.peakTotal = { v: total, ts: nowIso }
+                }
+                for (const size of WOULD_FIRE_SIZES) {
+                    const shadowPlan = decide({
+                        hi: hiNum,
+                        gp: gpNum,
+                        partyTargets: [size],
+                        ...decideOpts,
+                    })
+                    if (shadowPlan) wf.sizeCounts.set(size, wf.sizeCounts.get(size) + 1)
                 }
             }
 
@@ -892,6 +954,41 @@ async function cmdWatchAuto({
             // Reset the window for the next heartbeat.
             windowStats.clear()
 
+            // Would-have-fired summary: for each candidate size below the
+            // current floor, how many polls in the window had enough stock.
+            // Direct answer to "should I lower partyTargets?" Reset alongside.
+            const wfLines = []
+            for (const d of datesForWindow) {
+                const wf = wouldFireStats.get(d)
+                if (!wf) continue
+                const cells = WOULD_FIRE_SIZES
+                    .map(s => `party=${s}: ${wf.sizeCounts.get(s)}`)
+                    .join(' · ')
+                const peakStr = wf.peakTotal.v > 0
+                    ? `peak hi+gp=${wf.peakTotal.v} at ${formatPT(wf.peakTotal.ts)} PT`
+                    : 'no concurrent stock'
+                wfLines.push(`\`${d.slice(5)}\`: ${cells} (${peakStr})`)
+            }
+            wouldFireStats.clear()
+
+            // Fire telemetry (most windows: empty). When present, shows
+            // whether reload-on-mismatch was exercised and the actual KPI.
+            const fireLines = []
+            if (fireTelemetry.length > 0) {
+                for (const f of fireTelemetry) {
+                    const reload = f.reloadOutcome ? `reload→${f.reloadOutcome}` : 'no reload'
+                    const kpi = f.apiSignalToBookClickMs != null
+                        ? `${f.apiSignalToBookClickMs}ms`
+                        : '-'
+                    fireLines.push(
+                        `\`${f.fireId}\` acct${f.accountIndex} ${f.date}: ` +
+                        `cart=${f.cartState ?? f.reason ?? 'unknown'} · ` +
+                        `API→book=${kpi} · ${reload}`
+                    )
+                }
+                fireTelemetry.length = 0
+            }
+
             const msg = [
                 `💓 **watch-auto heartbeat** ${statusEmoji}`,
                 `**Uptime:** ${uptimeMin} min`,
@@ -900,6 +997,11 @@ async function cmdWatchAuto({
                 `**API window (last ${Math.round(HEARTBEAT_MS / 60000)} min):**`,
                 ...windowLines.map(l => `  ${l}`),
                 `_\`—\` = rec.gov suppressed the cell from the API payload (treated as 0 for firing). Common, not an error._`,
+                `**Would-have-fired (below current floor):**`,
+                ...wfLines.map(l => `  ${l}`),
+                ...(fireLines.length > 0
+                    ? [`**Fires this window:**`, ...fireLines.map(l => `  ${l}`)]
+                    : []),
                 `**Consec failures:** ${consecutiveAllFail}`,
                 `**Backoff:** ${checker.backoffMs}ms`,
                 `**Config verify:** ${verifyLine}`,
@@ -917,6 +1019,8 @@ async function cmdWatchAuto({
                 uptimeMin,
                 lastSnapshotSummary,
                 windowSummary: windowLines,
+                wouldFireSummary: wfLines,
+                fireSummary: fireLines,
                 verifyOk,
                 flags,
                 discord: { ...discordTelemetry },
