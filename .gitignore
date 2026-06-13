@@ -16,3 +16,4 @@ permit-bot/.outbox.jsonl
 permit-bot/.last-page-snapshot.html
 permit-bot/.dom-fingerprint.json
 permit-bot/logs/
+permit-bot/reports/

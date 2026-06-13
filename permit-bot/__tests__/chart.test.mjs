@@ -1,0 +1,225 @@
+// Smoke tests for the chart renderer. The visual output is hard to assert
+// without screenshots, so these check the structural pieces: events are
+// extracted from polls, null transitions create gaps, the SVG contains
+// expected markers (release line, labels for transitions, peak in subtitle).
+
+import { renderSvg, resolveDate, runChartCommand } from '../chart.mjs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+
+const DATE = '2026-06-20'
+const baseTs = (hhmmss) => `2026-06-13T${hhmmss}.000Z`
+
+// 6:50-7:35 PT = 13:50-14:35 UTC on race day.
+const window = {
+    fromIso: '2026-06-13T13:50:00Z',
+    toIso: '2026-06-13T14:35:00Z',
+}
+
+const poll = (utcHHMMSS, hi, gp) => ({
+    event: 'poll',
+    ts: baseTs(utcHHMMSS),
+    byDate: { [DATE]: { hi, gp } },
+})
+
+describe('renderSvg', () => {
+    test('basic structural elements', () => {
+        const polls = [
+            poll('13:55:00', 0, 0),
+            poll('13:59:30', 10, 4), // release
+            poll('14:00:11', null, null),
+            poll('14:00:49', 4, 0),
+            poll('14:01:04', null, null),
+        ]
+        const svg = renderSvg({ polls, date: DATE, ...window })
+        expect(svg.startsWith('<svg')).toBe(true)
+        expect(svg).toContain('</svg>')
+        // Release marker rendered
+        expect(svg).toContain('06:59:30 release')
+        // Title with date
+        expect(svg).toContain('2026-06-20')
+        // Peak subtitle
+        expect(svg).toContain('peak hi+gp=14')
+    })
+
+    test('null values create line gaps (no segment spans nulls)', () => {
+        // Two non-null islands separated by nulls. Should yield 2 HI segments.
+        const polls = [
+            poll('13:59:30', 5, 0),
+            poll('13:59:31', 5, 0),
+            poll('13:59:32', null, null),
+            poll('13:59:33', null, null),
+            poll('14:00:00', 3, 0),
+            poll('14:00:01', 3, 0),
+        ]
+        const svg = renderSvg({ polls, date: DATE, ...window })
+        // Each polyline element = one continuous segment. With two HI islands
+        // we expect at least 2 polyline elements (HI). Plus GP segments
+        // (GP=0 the whole time, one segment).
+        const polylineCount = (svg.match(/<polyline /g) || []).length
+        expect(polylineCount).toBeGreaterThanOrEqual(2)
+    })
+
+    test('zero→positive transitions become labeled events', () => {
+        const polls = [
+            poll('13:59:30', 0, 0),
+            poll('13:59:31', 10, 4),   // both transition
+            poll('13:59:32', 10, 4),
+            poll('13:59:33', 0, 0),
+            poll('14:00:00', 0, 0),
+            poll('14:00:01', 7, 0),    // HI transition again
+        ]
+        const svg = renderSvg({ polls, date: DATE, ...window })
+        expect(svg).toContain('HI=10')
+        expect(svg).toContain('GP=4')
+        expect(svg).toContain('HI=7')
+    })
+
+    test('out-of-window polls are filtered', () => {
+        const polls = [
+            poll('05:00:00', 10, 10), // way before window
+            poll('13:59:30', 5, 5),   // inside
+            poll('20:00:00', 10, 10), // way after
+        ]
+        const svg = renderSvg({ polls, date: DATE, ...window })
+        // Subtitle counts polls in window — should be 1, not 3.
+        expect(svg).toContain('1 polls')
+    })
+
+    test('empty window renders no-stock subtitle gracefully', () => {
+        const polls = [
+            poll('13:55:00', 0, 0),
+            poll('14:00:00', 0, 0),
+            poll('14:10:00', 0, 0),
+        ]
+        const svg = renderSvg({ polls, date: DATE, ...window })
+        expect(svg).toContain('no concurrent stock')
+        expect(svg).toContain('</svg>')
+    })
+
+    test('only renders the requested date (ignores other dates in byDate)', () => {
+        // Add a SECOND date with massive stock — should be ignored.
+        const polls = [
+            { event: 'poll', ts: baseTs('13:59:30'), byDate: {
+                [DATE]: { hi: 2, gp: 0 },
+                '2026-06-21': { hi: 99, gp: 99 },
+            }},
+        ]
+        const svg = renderSvg({ polls, date: DATE, ...window })
+        expect(svg).toContain('peak hi+gp=2')
+        expect(svg).not.toContain('hi+gp=198')
+    })
+})
+
+describe('runChartCommand window selection (regression: empty chart bug)', () => {
+    // 06-13 race-day session ran on 2026-06-13 PT morning, targeting the
+    // 2026-06-20 trailhead date. First version of the chart command built the
+    // plot window using the target date — so 06:50 PT on 06-20 had no polls
+    // and the chart rendered empty. Fix: use the session's PT calendar day.
+
+    let tmp
+    beforeEach(() => { tmp = mkdtempSync(path.join(tmpdir(), 'chart-test-')) })
+    afterEach(() => { rmSync(tmp, { recursive: true, force: true }) })
+
+    const writeFixtureSession = (events) => {
+        const p = path.join(tmp, 'session.jsonl')
+        writeFileSync(p, events.map(JSON.stringify).join('\n') + '\n')
+        return p
+    }
+
+    test('session day != target date — chart still contains polls (regression)', async () => {
+        // Session ran morning of 2026-06-13 PT (13:50–14:30 UTC), targeting
+        // the 2026-06-20 trailhead date.
+        const session = writeFixtureSession([
+            { event: 'startup', ts: '2026-06-13T13:50:00.000Z', targets: ['2026-06-20'] },
+            { event: 'poll', ts: '2026-06-13T13:55:00.000Z', byDate: { '2026-06-20': { hi: 0, gp: 0 } } },
+            { event: 'poll', ts: '2026-06-13T13:59:30.421Z', byDate: { '2026-06-20': { hi: 10, gp: 4 } } },
+            { event: 'poll', ts: '2026-06-13T14:00:11.000Z', byDate: { '2026-06-20': { hi: null, gp: null } } },
+        ])
+        const { reportPath } = await runChartCommand({
+            sessionPath: session,
+            outDir: tmp,
+        })
+        const html = readFileSync(reportPath, 'utf-8')
+        // The chart subtitle reports poll count IN window. If the window
+        // was built from the target date, it'd say "0 polls". Fix should
+        // put 3 polls in the 06:50–07:35 PT window.
+        expect(html).not.toContain('0 polls · no concurrent stock')
+        expect(html).toContain('3 polls')
+        // And the release transition should be labeled.
+        expect(html).toContain('HI=10')
+        expect(html).toContain('GP=4')
+    })
+
+    test('multi-session same-day: load all logs from session day (echoes after restart)', async () => {
+        // Race day reality: the bot may restart mid-morning (e.g. after a failed
+        // fire). Echoes happen in session 2 but the chart loads session 1. Fix:
+        // when `--all-sessions` is passed, runChartCommand combines events from
+        // every same-PT-day log in the parent directory.
+        const sessionA = path.join(tmp, 'watch-auto-2026-06-13T08-00-00-000Z.jsonl')
+        writeFileSync(sessionA, [
+            { event: 'startup', ts: '2026-06-13T13:55:00.000Z', targets: ['2026-06-20'] },
+            { event: 'poll', ts: '2026-06-13T13:59:30.000Z', byDate: { '2026-06-20': { hi: 10, gp: 4 } } },
+            // session 1 dies after failed fire
+        ].map(JSON.stringify).join('\n') + '\n')
+
+        const sessionB = path.join(tmp, 'watch-auto-2026-06-13T14-00-00-000Z.jsonl')
+        writeFileSync(sessionB, [
+            { event: 'startup', ts: '2026-06-13T14:00:39.000Z', targets: ['2026-06-20'] },
+            { event: 'poll', ts: '2026-06-13T14:00:49.000Z', byDate: { '2026-06-20': { hi: 4, gp: 0 } } }, // ECHO 1
+            { event: 'poll', ts: '2026-06-13T14:04:04.000Z', byDate: { '2026-06-20': { hi: 0, gp: 2 } } }, // ECHO 2
+        ].map(JSON.stringify).join('\n') + '\n')
+
+        const { reportPath } = await runChartCommand({
+            sessionPath: sessionA,
+            allSameDay: true,
+            outDir: tmp,
+        })
+        const html = readFileSync(reportPath, 'utf-8')
+        // Events from BOTH sessions should appear.
+        expect(html).toContain('HI=10') // session A
+        expect(html).toContain('GP=4')  // session A
+        expect(html).toContain('HI=4 @ 07:00:49') // session B echo
+        expect(html).toContain('GP=2 @ 07:04:04') // session B echo
+    })
+
+    test('session and target same day still works (sanity)', async () => {
+        // Edge case: same-day session (rare but possible in test/sim runs).
+        const session = writeFixtureSession([
+            { event: 'startup', ts: '2026-06-20T13:55:00.000Z', targets: ['2026-06-20'] },
+            { event: 'poll', ts: '2026-06-20T13:59:30.421Z', byDate: { '2026-06-20': { hi: 5, gp: 0 } } },
+        ])
+        const { reportPath } = await runChartCommand({
+            sessionPath: session,
+            outDir: tmp,
+        })
+        const html = readFileSync(reportPath, 'utf-8')
+        expect(html).toContain('1 polls')
+        expect(html).toContain('HI=5')
+    })
+})
+
+describe('resolveDate', () => {
+    test('returns override when provided', () => {
+        expect(resolveDate([], '2026-07-01')).toBe('2026-07-01')
+    })
+
+    test('reads from startup.targets', () => {
+        const events = [
+            { event: 'startup', ts: 'x', targets: ['2026-06-20', '2026-06-21'] },
+        ]
+        expect(resolveDate(events)).toBe('2026-06-20')
+    })
+
+    test('falls back to first date in any poll byDate', () => {
+        const events = [
+            { event: 'poll', ts: 'x', byDate: { '2026-06-25': { hi: 0, gp: 0 } } },
+        ]
+        expect(resolveDate(events)).toBe('2026-06-25')
+    })
+
+    test('throws when no signal anywhere', () => {
+        expect(() => resolveDate([{ event: 'heartbeat' }])).toThrow(/Could not infer/)
+    })
+})

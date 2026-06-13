@@ -14,6 +14,7 @@ import * as outbox from './outbox.mjs'
 import { decide } from './decision.mjs'
 import { httpsAgent } from './dnsBypass.mjs'
 import { benchmarkPolling } from './benchmark.mjs'
+import { runChartCommand, latestSessionLogPath } from './chart.mjs'
 
 const log = {
     info: (msg) => console.log(`[${new Date().toISOString()}] ${msg}`),
@@ -1185,6 +1186,26 @@ const kv = Object.fromEntries(
                 }
                 break
             }
+            case 'chart': {
+                // Render an SVG + HTML report of a session log's API tick
+                // history, fires, and recent heartbeats. Defaults: most recent
+                // session log + first targeted date + 06:50-07:35 PT window.
+                // --all-sessions: also merge events from every other session
+                // log in the same directory whose PT day matches this one
+                // (race-day reality is multi-session after restarts).
+                const sessionPath = kv.session || latestSessionLogPath()
+                const { reportPath, polls } = await runChartCommand({
+                    sessionPath,
+                    date: kv.date,
+                    fromHHMM: kv.from,
+                    toHHMM: kv.to,
+                    allSameDay: flags.has('--all-sessions'),
+                })
+                log.info(`chart: rendered ${polls} polls from ${sessionPath}${flags.has('--all-sessions') ? ' (+ same-day siblings)' : ''}`)
+                log.info(`chart: report at ${reportPath}`)
+                console.log(reportPath)
+                break
+            }
             case 'benchmark': {
                 const config = loadConfig()
                 const ym = config.targetDates[0].slice(0, 7)
@@ -1213,6 +1234,9 @@ const kv = Object.fromEntries(
   node permit-bot/permit-bot.mjs test-cart [--account=N]           # dry-run cart flow (no clicks)
   node permit-bot/permit-bot.mjs test-cart --for-real [--account=N]
   node permit-bot/permit-bot.mjs benchmark --interval=2000 --duration=60 --concurrency=1
+  node permit-bot/permit-bot.mjs chart [--session=<log.jsonl>] [--date=YYYY-MM-DD] [--from=HH:MM] [--to=HH:MM] [--all-sessions]
+                                                                  # render SVG+HTML report of API tick history. --all-sessions merges every
+                                                                  # same-PT-day session log (default: latest session log, 06:50–07:35 PT)
 `)
                 process.exit(1)
         }
