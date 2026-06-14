@@ -287,6 +287,47 @@ describe('runChartCommand window selection (regression: empty chart bug)', () =>
         expect(html).toContain('GP=4')
     })
 
+    test('long-running session across midnight: window day comes from the FIRE, not startup (regression)', async () => {
+        // Real case from 06-14: a session started 06-13 afternoon PT and was
+        // still running for the 06-14 morning race. Old code anchored the
+        // window day on startup (06-13), so the 06-14 06:59:30 fire and polls
+        // fell outside the 06-13 06:50–07:35 window and the chart was empty.
+        // Fix: prefer the first fire/decision event's PT day as the window
+        // anchor. CLI flag --window-day overrides.
+        const session = writeFixtureSession([
+            { event: 'startup', ts: '2026-06-13T15:32:27.000Z', targets: ['2026-06-21'] }, // PT 08:32 on 06-13
+            { event: 'poll', ts: '2026-06-13T20:00:00.000Z', byDate: { '2026-06-21': { hi: 0, gp: 0 } } },
+            { event: 'poll', ts: '2026-06-14T13:59:22.000Z', byDate: { '2026-06-21': { hi: 8, gp: 4 } } },
+            { event: 'decision', ts: '2026-06-14T13:59:22.880Z', fireId: 'x', date: '2026-06-21', plan: { kind: 'solo', partySize: 7, shots: [] } },
+            { event: 'fire_results', ts: '2026-06-14T13:59:30.000Z', fireId: 'x', date: '2026-06-21', allFailed: true, results: [] },
+        ])
+        const { reportPath } = await runChartCommand({
+            sessionPath: session,
+            outDir: tmp,
+        })
+        const html = readFileSync(reportPath, 'utf-8')
+        // The fire happened on 06-14, so the window should cover 06-14
+        // 06:50-07:35 PT and INCLUDE the 06-14 13:59:22 poll showing HI=8.
+        expect(html).toContain('"HI=8"')
+        // Window min should be 06-14 06:50 PT = 06-14 13:50Z, not 06-13.
+        expect(html).toContain(String(Date.parse('2026-06-14T06:50:00-07:00')))
+    })
+
+    test('--window-day CLI override pins the window even when sessions span days', async () => {
+        const session = writeFixtureSession([
+            { event: 'startup', ts: '2026-06-13T15:32:27.000Z', targets: ['2026-06-21'] },
+            { event: 'poll', ts: '2026-06-14T13:59:30.000Z', byDate: { '2026-06-21': { hi: 5, gp: 0 } } },
+        ])
+        const { reportPath } = await runChartCommand({
+            sessionPath: session,
+            windowDay: '2026-06-14',
+            outDir: tmp,
+        })
+        const html = readFileSync(reportPath, 'utf-8')
+        expect(html).toContain('"HI=5"')
+        expect(html).toContain(String(Date.parse('2026-06-14T06:50:00-07:00')))
+    })
+
     test('multi-session same-day: load all logs from session day (echoes after restart)', async () => {
         // Race day reality: the bot may restart mid-morning (e.g. after a failed
         // fire). Echoes happen in session 2 but the chart loads session 1. Fix:

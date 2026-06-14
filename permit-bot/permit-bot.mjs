@@ -1199,6 +1199,7 @@ const kv = Object.fromEntries(
                     date: kv.date,
                     fromHHMM: kv.from,
                     toHHMM: kv.to,
+                    windowDay: kv['window-day'] || null,
                     allSameDay: flags.has('--all-sessions'),
                 })
                 log.info(`chart: rendered ${polls} polls from ${sessionPath}${flags.has('--all-sessions') ? ' (+ same-day siblings)' : ''}`)
@@ -1234,9 +1235,10 @@ const kv = Object.fromEntries(
   node permit-bot/permit-bot.mjs test-cart [--account=N]           # dry-run cart flow (no clicks)
   node permit-bot/permit-bot.mjs test-cart --for-real [--account=N]
   node permit-bot/permit-bot.mjs benchmark --interval=2000 --duration=60 --concurrency=1
-  node permit-bot/permit-bot.mjs chart [--session=<log.jsonl>] [--date=YYYY-MM-DD] [--from=HH:MM] [--to=HH:MM] [--all-sessions]
+  node permit-bot/permit-bot.mjs chart [--session=<log.jsonl>] [--date=YYYY-MM-DD] [--from=HH:MM] [--to=HH:MM] [--window-day=YYYY-MM-DD] [--all-sessions]
                                                                   # render SVG+HTML report of API tick history. --all-sessions merges every
-                                                                  # same-PT-day session log (default: latest session log, 06:50–07:35 PT)
+                                                                  # same-PT-day session log. --window-day pins the chart window to a
+                                                                  # specific PT day (for long-running sessions spanning midnight)
 `)
                 process.exit(1)
         }

@@ -537,10 +537,23 @@ export function ptCalendarDate(isoTs) {
 // allSameDay: when true, also load every other session log in the same
 // directory whose first event falls on the same PT calendar day, and merge
 // their events. Race-day reality is multi-session (bot restarts mid-morning).
-export async function runChartCommand({ sessionPath, date, fromHHMM, toHHMM, allSameDay = false, outDir = 'permit-bot/reports' }) {
+export async function runChartCommand({ sessionPath, date, fromHHMM, toHHMM, allSameDay = false, windowDay = null, outDir = 'permit-bot/reports' }) {
     let events = readSessionLog(sessionPath)
-    const startupOrFirst = events.find(e => e.event === 'startup') || events[0]
-    const sessionDayPT = ptCalendarDate(startupOrFirst.ts)
+    // Window day priority:
+    //   1. --window-day CLI override
+    //   2. PT day of the first decision/fire_results (the action day, even if
+    //      the session started days earlier)
+    //   3. PT day of startup (sole long-running session fallback)
+    // Long-running sessions span midnight; old code anchored on startup and
+    // produced an empty chart when the race ran on a different day.
+    let sessionDayPT
+    if (windowDay) {
+        sessionDayPT = windowDay
+    } else {
+        const action = events.find(e => e.event === 'decision' || e.event === 'fire_results')
+        const anchor = action || events.find(e => e.event === 'startup') || events[0]
+        sessionDayPT = ptCalendarDate(anchor.ts)
+    }
     if (allSameDay) {
         const dir = path.dirname(sessionPath)
         const siblings = readdirSync(dir)
