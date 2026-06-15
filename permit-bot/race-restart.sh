@@ -93,10 +93,17 @@ node permit-bot/permit-bot.mjs release-cart --accounts=1,2 2>&1 | grep -E "acct[
 blue ""
 blue "=== 4/7 starting fresh watch-auto --pre-warm ==="
 rm -f "$PID_FILE" "$LOG_FILE"
-nohup node permit-bot/permit-bot.mjs watch-auto --pre-warm > "$LOG_FILE" 2>&1 &
+# caffeinate prevents macOS from putting the bot to sleep:
+#   -i: prevent idle sleep (system & display)
+#   -s: prevent system sleep on AC power
+#   -m: prevent disk sleep
+# Without this, the bot's Chromium warmers can trigger App Nap and the
+# node event loop freezes silently — observed 06-15 race-day: 16 min of
+# zero events spanning 06:55–07:11 PT, missed the entire release window.
+nohup caffeinate -ism node permit-bot/permit-bot.mjs watch-auto --pre-warm > "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 NEW_PID=$(cat "$PID_FILE")
-green "✓ launched PID $NEW_PID"
+green "✓ launched PID $NEW_PID (wrapped in caffeinate -ism to prevent App Nap)"
 
 blue ""
 blue "=== 5/7 waiting for both warmers (15-25s) ==="
@@ -153,8 +160,8 @@ cat <<EOF
   🛠 Useful commands
   ──────────────────
   Tail logs:     tail -f $LOG_FILE
-  Stop bot:      kill \$(cat $PID_FILE)
-  Check alive:   kill -0 \$(cat $PID_FILE) && echo ALIVE || echo DEAD
+  Stop bot:      pkill -f 'permit-bot.mjs watch-auto'   # kills both caffeinate + node
+  Check alive:   pgrep -fl 'permit-bot.mjs watch-auto'  # shows the caffeinate + node pids
 
 EOF
 green "good luck 🏕️"
