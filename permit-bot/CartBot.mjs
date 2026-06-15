@@ -153,6 +153,50 @@ export async function findRowWithReloadRecovery(page, target, reloadAndResetup, 
     return { ...result, didReload }
 }
 
+// Set the group/party size in the popover. Prefers the editable number input
+// (one .fill() call, ~50ms) over the stepper buttons (~80ms per click ×
+// |delta|). Falls back to the buttons if the input isn't rendered, which
+// happens during cold-load before the popover hydrates. Returns
+// { ok, method } where method ∈ 'input' | 'buttons' | 'noop'.
+//
+// Selectors:
+//   input — type=number AND visible inside the popover. Many rec.gov pages
+//     ship spinbutton inputs; we match aria-label "Number of People" first,
+//     then any visible number input.
+//   buttons — aria-label "Add Peoples" / "Remove Peoples" (note rec.gov's
+//     own typo; verified via probe-popover.mjs).
+export async function setPartySize(page, newSize, currentSize, { log = console } = {}) {
+    if (newSize === currentSize) return { ok: true, method: 'noop' }
+
+    // Try the input path first.
+    const input = page.locator(
+        'input[type="number"][aria-label*="People" i], input[type="number"][aria-label*="group" i], input[type="number"]:visible'
+    ).first()
+    if (await input.count() > 0) {
+        try {
+            await input.fill(String(newSize), { timeout: 1500 })
+            // rec.gov binds on the 'change' event; blur fires it.
+            await input.blur().catch(() => {})
+            return { ok: true, method: 'input' }
+        } catch (err) {
+            log.warn?.(`setPartySize: input fill failed: ${err.message}; falling back to buttons`)
+        }
+    }
+
+    // Button fallback: click + or − by the appropriate delta.
+    const delta = newSize - currentSize
+    const btnLabel = delta > 0 ? 'Add Peoples' : 'Remove Peoples'
+    const btn = page.locator(`button[aria-label="${btnLabel}"]`).first()
+    if (await btn.count() === 0) {
+        return { ok: false, method: null }
+    }
+    for (let i = 0; i < Math.abs(delta); i++) {
+        await btn.click({ timeout: 1500 }).catch(() => {})
+        await page.waitForTimeout(20)
+    }
+    return { ok: true, method: 'buttons' }
+}
+
 // Position-based cell finder for the OPTIMISTIC CLICK strategy (06-14 fix).
 // When the API says stock is open but every visible cell shows NR (stale
 // DOM or race-too-fast), we still need a clickable button at the right
@@ -564,30 +608,11 @@ export async function tryGrab({
         await groupTrigger.click()
         await page.screenshot({ path: screenshotPath('02-after-trigger-click'), fullPage: false })
 
-        log.info('Step 1b: wait for stepper input (2s cap; rec.gov stepper is not a fillable input — fallback is normal)')
-        const stepperInput = page.locator('input[type="number"], input[role="spinbutton"]').first()
-        await stepperInput.waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
-
-        let setOk = false
-        if (await stepperInput.count() > 0) {
-            try {
-                log.info('Step 1c: fill stepper')
-                await stepperInput.click({ clickCount: 3 }).catch(() => {})
-                await stepperInput.fill(String(partySize))
-                await stepperInput.press('Tab')
-                setOk = true
-            } catch (e) {
-                log.warn(`Stepper fill failed: ${e.message}`)
-            }
-        }
-        if (!setOk) {
-            log.info('Step 1d: click + N times')
-            // Exact aria-label — broad "add" matches "Add to Cart" etc.
-            const plusBtn = page.locator('button[aria-label="Add Peoples"]').first()
-            for (let i = 0; i < partySize; i++) {
-                await plusBtn.click({ timeout: 2000 }).catch(() => {})
-                await page.waitForTimeout(80)
-            }
+        log.info('Step 1b: set party size via setPartySize (input fill → button fallback)')
+        const setResult = await setPartySize(page, partySize, 0, { log })
+        log.info(`Step 1c: setPartySize result: ${JSON.stringify(setResult)}`)
+        if (!setResult.ok) {
+            log.warn(`Step 1: setPartySize failed — popover controls not found`)
         }
         await page.screenshot({ path: screenshotPath('03-after-stepper'), fullPage: false })
 
@@ -883,22 +908,20 @@ export async function warmCart({
     await page.waitForTimeout(2000)
     await handleLoginModalIfPresent(page, { log, accountIndex })
 
-    // Set group size (same approach as tryGrab — rec.gov's input is not fillable
-    // so we click "+" partySize times).
+    // Open the group popover. setPartySize handles input-fill (fast) with
+    // button-click fallback (legacy slow path). Update 06-14: the previous
+    // comment claimed rec.gov's number "input" was a display-only field —
+    // wrong; it's a real editable input. One fill() replaces N clicks (was
+    // ~1.3s for party=15 → ~50ms via input).
     const groupTrigger = page.locator(
         'button:has-text("Add Group Members"), [placeholder*="Add Group" i], [aria-label*="Group" i]'
     ).first()
     await groupTrigger.waitFor({ state: 'visible', timeout: 15000 })
     await groupTrigger.click()
     await page.waitForTimeout(500)
-    // rec.gov's popover stepper buttons are aria-label="Add Peoples" / "Remove Peoples".
-    // (Verified 2026-06-11 via probe-popover.mjs.) The "input" between them is a
-    // text display, not an editable field — buttons are the only mechanism.
-    const plusBtn = page.locator('button[aria-label="Add Peoples"]').first()
-    for (let i = 0; i < partySize; i++) {
-        await plusBtn.click({ timeout: 2000 }).catch(() => {})
-        await page.waitForTimeout(60)
-    }
+    const setResult = await setPartySize(page, partySize, 0, { log })
+    if (!setResult.ok) log.warn(`${tag} setPartySize failed at warm time — popover controls not found`)
+    else log.info(`${tag} party=${partySize} set via ${setResult.method}`)
     const closeBtn = page.getByRole('button', { name: /^(close|done|apply)$/i }).first()
     if (await closeBtn.count() > 0) await closeBtn.click().catch(() => {})
     else await page.keyboard.press('Escape')
@@ -927,14 +950,12 @@ export async function warmCart({
     // Open the group popover, click "-" decrement times, close. Used to drop
     // currentParty when a target date has fewer slots than we asked for.
     const adjustPartyTo = async (newParty) => {
-        const decrement = currentParty - newParty
-        if (decrement <= 0) return false
+        if (newParty >= currentParty) return false
         log.info(`${tag} adjusting party ${currentParty} → ${newParty}`)
         // After setup, the trigger text changes from "Add Group Members" to
         // the count summary. Match a few possible forms; if first() picks
         // anything else, the click is harmless (popover's already-closed
-        // anyway). Verified safe selectors: "Group Members" text, group-related
-        // aria-label, or the "People" pill that displays the count.
+        // anyway).
         const trigger = page.locator(
             'button:has-text("Group Member"), button:has-text("Group Members"), button:has-text("People"), [aria-label*="Group Member" i]'
         ).first()
@@ -946,14 +967,13 @@ export async function warmCart({
             return false
         }
         await page.waitForTimeout(300)
-        // EXACT aria-label match — the broad "decrease/decrement/subtract"
-        // selector wrongly hit the "Prev 5 Days" calendar button and shifted
-        // the date instead of dropping the party. The popover button is
-        // aria-label="Remove Peoples". (verified via probe-popover.mjs)
-        const minusBtn = page.locator('button[aria-label="Remove Peoples"]').first()
-        for (let i = 0; i < decrement; i++) {
-            await minusBtn.click({ timeout: 1500 }).catch(() => {})
-            await page.waitForTimeout(40)
+        // setPartySize prefers the editable input (one fill, ~50ms) over
+        // clicking − N times (~80ms × |delta|). Old comments here claimed
+        // the input was display-only — wrong; verified live on 06-14.
+        const setResult = await setPartySize(page, newParty, currentParty, { log })
+        if (!setResult.ok) {
+            log.warn(`${tag} adjustPartyTo: setPartySize failed`)
+            return false
         }
         const close = page.getByRole('button', { name: /^(close|done|apply)$/i }).first()
         if (await close.count() > 0) await close.click().catch(() => {})
@@ -1001,11 +1021,9 @@ export async function warmCart({
             if (await groupTriggerR.count() > 0) {
                 await groupTriggerR.click().catch(() => {})
                 await page.waitForTimeout(300)
-                const plusBtnR = page.locator('button[aria-label="Add Peoples"]').first()
-                for (let i = 0; i < currentParty; i++) {
-                    await plusBtnR.click({ timeout: 1500 }).catch(() => {})
-                    await page.waitForTimeout(40)
-                }
+                // setPartySize uses input-fill when available (was N × ~1.5s
+                // worth of clicks on a fresh post-reload page).
+                await setPartySize(page, currentParty, 0, { log })
                 await page.keyboard.press('Escape')
                 await page.waitForTimeout(700)
             }
