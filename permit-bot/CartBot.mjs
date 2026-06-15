@@ -153,6 +153,35 @@ export async function findRowWithReloadRecovery(page, target, reloadAndResetup, 
     return { ...result, didReload }
 }
 
+// Position-based cell finder for the OPTIMISTIC CLICK strategy (06-14 fix).
+// When the API says stock is open but every visible cell shows NR (stale
+// DOM or race-too-fast), we still need a clickable button at the right
+// column. This function anchors on any sibling cell whose aria-label still
+// carries the weekday+day pair, computes the target's column index, and
+// returns that button's handle regardless of label or text. Caller is
+// expected to click optimistically — backend POST is the source of truth.
+export async function findCellByPositionInRow(row, date) {
+    const [, , d] = date.split('-').map(Number)
+    const cells = await row.locator('button').all()
+    // Find an anchor: any cell whose aria-label still carries weekday+day.
+    // Start at i=1 to skip the trailhead-name button at index 0.
+    let anchorIdx = -1
+    let anchorDay = -1
+    for (let i = 1; i < cells.length; i++) {
+        const lbl = (await cells[i].getAttribute('aria-label')) || ''
+        const m = lbl.match(/\b(?:MON|TUE|WED|THU|FRI|SAT|SUN)\s+(\d{1,2})\b/)
+        if (m) { anchorIdx = i; anchorDay = Number(m[1]); break }
+    }
+    if (anchorIdx < 0) return null
+    // Same-month assumption: visible window is ~10 days; column offset = day delta.
+    const targetIdx = anchorIdx + (d - anchorDay)
+    if (targetIdx < 1 || targetIdx >= cells.length) return null
+    const c = cells[targetIdx]
+    const lbl = (await c.getAttribute('aria-label')) || ''
+    const txt = (await c.innerText().catch(() => '')).trim()
+    return { handle: c, label: lbl, txt, idx: targetIdx }
+}
+
 // Pure DOM cell-finder. Locates the bookable cell in `row` for `date`. Returns
 // { handle, label, txt } or null. Exported so the reload-recovery wrapper can
 // be tested without dragging in the whole hot() closure.
@@ -1025,25 +1054,10 @@ export async function warmCart({
         // remaining count. We need a way to locate the FRI 19 cell anyway. Use
         // an "anchor" cell — any cell in the row still showing its weekday/day
         // — to map column index to date and compute the target index.
-        const findCellByPosition = async () => {
-            const cells = await row.locator('button').all()
-            // Find an anchor: any cell whose aria-label still carries weekday+day.
-            let anchorIdx = -1
-            let anchorDay = -1
-            for (let i = 1; i < cells.length; i++) {
-                const lbl = (await cells[i].getAttribute('aria-label')) || ''
-                const m = lbl.match(/\b(?:MON|TUE|WED|THU|FRI|SAT|SUN)\s+(\d{1,2})\b/)
-                if (m) { anchorIdx = i; anchorDay = Number(m[1]); break }
-            }
-            if (anchorIdx < 0) return null
-            // Assume same month (visible window is ~10 days). Compute offset.
-            const targetIdx = anchorIdx + (d - anchorDay)
-            if (targetIdx < 1 || targetIdx >= cells.length) return null
-            const c = cells[targetIdx]
-            const lbl = (await c.getAttribute('aria-label')) || ''
-            const txt = (await c.innerText().catch(() => '')).trim()
-            return { handle: c, label: lbl, txt, idx: targetIdx }
-        }
+        // findCellByPositionInRow exported from this module — same logic, but
+        // bound to (row, date) here for the closure. Reused by tryOvercapAdjust
+        // (read-only inspect) AND the optimistic-click fallback (click target).
+        const findCellByPosition = () => findCellByPositionInRow(row, date)
 
         // OVERCAP CHECK: when findCell() fails, the slot might still EXIST but
         // be hidden behind a party-size filter. Read the actual cell's text; if
@@ -1060,50 +1074,34 @@ export async function warmCart({
             return ok
         }
 
+        // cellMatchMode records HOW we got the cell handle, surfaced in
+        // fire_results so post-mortems can tell normal fires from optimistic
+        // clicks. Values: 'normal' | 'overcap' | 'optimistic' | null (no match).
+        let cellMatchMode = null
+        let reloadOutcome = null
         let match = await findCell()
+        if (match) cellMatchMode = 'normal'
         if (!match && await tryOvercapAdjust()) {
             match = await findCell()
-            if (match) log.info(`${tag} OVERCAP recovered: matched ${JSON.stringify(match.label)} at party=${currentParty}`)
+            if (match) {
+                cellMatchMode = 'overcap'
+                log.info(`${tag} OVERCAP recovered: matched ${JSON.stringify(match.label)} at party=${currentParty}`)
+            }
         }
-        // NOTE: previously this fell into a "Next 5 Days" advance loop (up to
-        // 6×, ~2.4s) when findCell returned null. For T+7/T+8 race dates the
-        // target weekday is always in the default visible window, so the loop
-        // never actually helped — it just wasted time on failure and walked the
-        // calendar past the target on the warm page. Removed 06-13. If the cell
-        // is null, the warm DOM is stale; the reload recovery below is the
-        // right answer.
-        // STALE-DOM RECOVERY (06-13 race): API said stock opened but every cell
-        // in the warm DOM still shows "No online reservations" — the SPA didn't
-        // repaint after the 7am flip. Reload once and re-look.
-        // Skip when the row lookup itself just reloaded (avoid double-reload).
-        // reloadOutcome categorizes what happened: 'matched' (success after
-        // reload), 'still_null' (reload ran, cell still NR), 'row_gone' (reload
-        // wiped the row entirely), or null (no reload attempted).
-        let reloadOutcome = null
-        if (!match && !rowResult.didReload) {
-            mark('stale_dom_reload_start')
-            const recovered = await findCellWithReloadRecovery({
-                page,
-                row,
-                date,
-                reloadAndResetup,
-                refindRow: async () => {
-                    const r = await findRowWithReloadRecovery(
-                        page, target, async () => {},
-                        { info: (m) => log.info?.(`${tag} ${m}`), warn: (m) => log.warn?.(`${tag} ${m}`) },
-                    )
-                    return r.row
-                },
-                log: { info: (m) => log.info?.(`${tag} ${m}`), warn: (m) => log.warn?.(`${tag} ${m}`) },
-            })
-            mark('stale_dom_reload_done')
-            if (recovered.row) row = recovered.row
-            if (recovered.match) {
-                match = recovered.match
-                reloadOutcome = 'matched'
-                log.info(`${tag} stale-DOM recovery: matched cell ${JSON.stringify(match.label)} after reload`)
-            } else {
-                reloadOutcome = recovered.row ? 'still_null' : 'row_gone'
+        // OPTIMISTIC CLICK (06-14 race): findCell looks for a cell with a
+        // bookable aria-label. When the API says stock is open but every
+        // cell still renders NR (race-too-fast: stock drained between API
+        // poll and our click), we skip the stale-DOM reload (~5s, too slow)
+        // and just click the cell at the target column index regardless of
+        // label. The cell click + book-now POST is the source of truth: if
+        // truly gone, rec.gov rejects and we log the truthful failure ~1s
+        // later. Worth the bet — the cost of being wrong is one bad POST.
+        if (!match) {
+            const positionMatch = await findCellByPositionInRow(row, date)
+            if (positionMatch) {
+                match = positionMatch
+                cellMatchMode = 'optimistic'
+                log.info(`${tag} OPTIMISTIC CLICK on position-matched cell[${positionMatch.idx}] label=${JSON.stringify(positionMatch.label)} txt=${JSON.stringify(positionMatch.txt)}`)
             }
         }
         if (!match) {
@@ -1113,7 +1111,7 @@ export async function warmCart({
             log.warn(`${tag} hot failed (no_matching_cell). Trace saved: ${tracePath}`)
             return {
                 ok: false, reason: 'no_matching_cell',
-                latencyMs: { total: Date.now() - t0, phases, didReload: rowResult.didReload, reloadOutcome },
+                latencyMs: { total: Date.now() - t0, phases, didReload: rowResult.didReload, reloadOutcome, cellMatchMode },
                 tracePath,
                 ...baseMeta,
             }
@@ -1124,7 +1122,12 @@ export async function warmCart({
         await match.handle.click()
         mark('cell_click')
         const book = page.getByRole('button', { name: /^book now$/i }).first()
-        await book.waitFor({ state: 'visible', timeout: 5000 })
+        // In optimistic mode, clicking an NR-labeled cell often won't trigger
+        // Book-Now activation — fail fast (1.5s) rather than burning 10s on
+        // a button that won't enable. Normal/overcap mode keeps the 5s grace
+        // since rec.gov can take a beat to render the wizard.
+        const bookTimeout = cellMatchMode === 'optimistic' ? 1500 : 5000
+        await book.waitFor({ state: 'visible', timeout: bookTimeout }).catch(() => {})
         await page.waitForFunction(
             () => {
                 const btns = [...document.querySelectorAll('button')]
@@ -1132,7 +1135,7 @@ export async function warmCart({
                 return b && !b.disabled && !b.getAttribute('aria-disabled')?.match(/true/i)
             },
             null,
-            { timeout: 5000, polling: 100 },
+            { timeout: bookTimeout, polling: 100 },
         ).catch(() => {})
         mark('book_button_ready')
         await book.click()
@@ -1194,6 +1197,7 @@ export async function warmCart({
                 phases,
                 didReload: rowResult.didReload,
                 reloadOutcome,
+                cellMatchMode,
                 strategy: rowResult.strategy,
             },
             accountIndex,

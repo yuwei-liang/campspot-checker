@@ -17,6 +17,7 @@ import { jest } from '@jest/globals'
 import { chromium } from 'playwright'
 import {
     findBookableCellInRow,
+    findCellByPositionInRow,
     findCellWithReloadRecovery,
     findTrailheadRow,
 } from '../CartBot.mjs'
@@ -106,6 +107,76 @@ describe('findBookableCellInRow', () => {
         await page.setContent(html, { waitUntil: 'domcontentloaded' })
         const row = await refindRow()
         const match = await findBookableCellInRow(row, DATE)
+        expect(match).toBeNull()
+    })
+})
+
+describe('findCellByPositionInRow (06-14 fix: optimistic-click target finder)', () => {
+    // Powers the new optimistic-click strategy: when the API says stock is
+    // open but every visible cell in the row is rendered NR (stale DOM or
+    // race-too-fast), we still need a clickable button at the right column.
+    // findCellByPositionInRow returns that button by computing its column
+    // index from any sibling cell whose aria-label still carries the
+    // weekday+day pair — independent of NR labeling.
+
+    test('returns the target-date cell even when every cell is NR-labeled', async () => {
+        // All cells say "No online reservations", but one of them is the
+        // SAT 20 column. Position math should find it regardless of labels.
+        const html = baseRow(`
+            <td><button aria-label="FRI 19\nNo online reservations available">NR</button></td>
+            <td><button aria-label="SAT 20\nNo online reservations available">NR</button></td>
+            <td><button aria-label="SUN 21\nNo online reservations available">NR</button></td>
+        `)
+        await page.setContent(html, { waitUntil: 'domcontentloaded' })
+        const row = await refindRow()
+        const match = await findCellByPositionInRow(row, DATE)
+        expect(match).not.toBeNull()
+        // SAT 20 is the second day-cell in the row (anchor=FRI 19 at idx, +1).
+        expect(match.label).toMatch(/SAT 20/)
+        // Handle must be clickable — verify it's the right button.
+        const labelOnHandle = await match.handle.getAttribute('aria-label')
+        expect(labelOnHandle).toMatch(/SAT 20/)
+    })
+
+    test('uses any visible weekday+day cell as anchor (works when SAT 20 itself is missing label)', async () => {
+        // SAT 20 cell present but with mangled label (rec.gov re-renders mid-flip
+        // can leave a button without weekday/day). FRI 19 is the anchor; SAT 20
+        // is anchorIdx+1.
+        const html = baseRow(`
+            <td><button aria-label="FRI 19\nNo online reservations available">NR</button></td>
+            <td><button aria-label="">??</button></td>
+            <td><button aria-label="SUN 21\nNo online reservations available">NR</button></td>
+        `)
+        await page.setContent(html, { waitUntil: 'domcontentloaded' })
+        const row = await refindRow()
+        const match = await findCellByPositionInRow(row, DATE)
+        expect(match).not.toBeNull()
+        // The match is the cell at anchorIdx + (20 - 19) = anchorIdx + 1, the
+        // unlabeled one. We just confirm a handle came back — caller will
+        // optimistically click it.
+        expect(match.idx).toBeGreaterThan(0)
+    })
+
+    test('returns null when no anchor cell exists (row is completely broken)', async () => {
+        const html = baseRow(`
+            <td><button aria-label="">??</button></td>
+            <td><button aria-label="">??</button></td>
+        `)
+        await page.setContent(html, { waitUntil: 'domcontentloaded' })
+        const row = await refindRow()
+        const match = await findCellByPositionInRow(row, DATE)
+        expect(match).toBeNull()
+    })
+
+    test('returns null when computed index is out of range (target date past visible window)', async () => {
+        // Anchor MON 8 with target SAT 20 → offset 12, exceeds visible cells.
+        const html = baseRow(`
+            <td><button aria-label="MON 8\nNo online reservations available">NR</button></td>
+            <td><button aria-label="TUE 9\nNo online reservations available">NR</button></td>
+        `)
+        await page.setContent(html, { waitUntil: 'domcontentloaded' })
+        const row = await refindRow()
+        const match = await findCellByPositionInRow(row, DATE)
         expect(match).toBeNull()
     })
 })
