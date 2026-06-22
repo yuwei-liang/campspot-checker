@@ -1,13 +1,16 @@
 import axios from 'axios'
 import { httpsAgent } from './dnsBypass.mjs'
 
-// Bumped 06-22 from Chrome/120 → Chrome/131. The probe page banner reads
-// "outdated browser not supported" for Chrome/120, which costs reCAPTCHA v3
-// fingerprint score and is suspected to have contributed to the 06-16
-// captcha-storm where 9 of 10 trace snapshots were reCAPTCHA challenges.
+// Bumped 06-22 from Chrome/120 → Chrome/148 (re-bumped same day after the
+// 131 update still triggered rec.gov's "outdated browser" banner — 131 is
+// also ~19 months old by 2026). Matches the actual Chromium engine version
+// shipped with Playwright (verified: navigator.userAgent reports
+// HeadlessChrome/148.0.7778.96). Stripping "Headless" + matching the
+// underlying engine version makes our UA consistent with the JS/CSS
+// capabilities rec.gov's fingerprinter actually probes.
 const USER_AGENT =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-    '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    '(KHTML, like Gecko) Chrome/148.0.7778.96 Safari/537.36'
 
 const MAX_BACKOFF_MS = 5 * 60 * 1000
 
