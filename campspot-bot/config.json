@@ -1,0 +1,13 @@
+{
+  "campgroundId": "232447",
+  "campgroundName": "Upper Pines Campground",
+  "park": "Yosemite",
+  "rangeStartDate": "2026-06-22",
+  "rangeEndDate": "2026-09-30",
+  "targetWeekdays": ["Thu", "Fri", "Sat", "Sun"],
+  "maxNights": 4,
+  "minNights": 2,
+  "minPeople": 6,
+  "pollIntervalMs": 60000,
+  "autoCart": false
+}
