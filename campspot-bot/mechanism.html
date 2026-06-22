@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>campspot-bot — Mechanism &amp; Workflow</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a23;
+    --panel-2: #1c2230;
+    --ink: #e7ecf3;
+    --ink-dim: #98a2b3;
+    --accent: #6ee7b7;
+    --accent-2: #fbbf24;
+    --accent-3: #818cf8;
+    --warn: #f87171;
+    --line: #2a3142;
+    --code: #c6d3e6;
+  }
+  html, body { background: var(--bg); color: var(--ink); }
+  body {
+    font: 14.5px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    margin: 0; padding: 32px 24px 64px;
+    max-width: 1100px; margin-inline: auto;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 36px 0 12px; color: var(--accent); letter-spacing: 0.04em; text-transform: uppercase; }
+  p, li { color: var(--ink); }
+  .lede { color: var(--ink-dim); margin: 0 0 12px; }
+  code, kbd, pre {
+    font: 12.5px/1.5 "SF Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+    color: var(--code);
+  }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+  pre {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    padding: 12px 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 8px 0 0;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px 18px;
+    margin: 8px 0;
+  }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 0; min-width: 240px; }
+
+  /* Architecture cards */
+  .arch { display: grid; grid-template-columns: 1fr 18px 1fr 18px 1fr; align-items: stretch; gap: 0; }
+  .arch .box {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .arch .arrow {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--ink-dim); font-weight: 700;
+  }
+  .box h3 { margin: 0 0 6px; font-size: 14px; color: var(--accent-3); letter-spacing: 0.03em; text-transform: uppercase; }
+  .box .meta { color: var(--ink-dim); font-size: 12.5px; }
+
+  /* Calendar */
+  .cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; max-width: 420px; }
+  .cal .h, .cal .d {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 8px 4px;
+    text-align: center;
+    font-size: 12px;
+  }
+  .cal .h { color: var(--ink-dim); font-weight: 600; }
+  .cal .d.out { opacity: 0.3; }
+  .cal .d.target { border-color: var(--accent); background: rgba(110,231,183,0.12); }
+  .cal .d.avail { background: rgba(110,231,183,0.35); color: #062a1d; font-weight: 700; }
+  .cal .d.res { background: var(--panel); color: var(--ink-dim); }
+  .cal .legend { grid-column: 1 / -1; color: var(--ink-dim); font-size: 12px; padding-top: 8px; }
+
+  /* Step list */
+  ol.steps { padding-left: 22px; }
+  ol.steps li { margin: 6px 0; }
+  ol.steps li code { color: var(--accent-2); }
+
+  /* Run modes table */
+  table { border-collapse: collapse; width: 100%; margin-top: 4px; }
+  th, td {
+    text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th { color: var(--ink-dim); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  td.cmd code { color: var(--accent-2); white-space: nowrap; }
+
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: var(--panel-2); color: var(--ink-dim); font-size: 11px;
+    border: 1px solid var(--line); margin-right: 6px;
+  }
+  .pill.live { background: rgba(110,231,183,0.12); color: var(--accent); border-color: rgba(110,231,183,0.4); }
+  .pill.warn { background: rgba(248,113,113,0.12); color: var(--warn); border-color: rgba(248,113,113,0.4); }
+
+  .seq {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 6px 16px;
+    align-items: start;
+  }
+  .seq .t { color: var(--accent-2); font: 12px/1.4 "SF Mono", ui-monospace, monospace; padding-top: 2px; }
+  .seq .e { padding-bottom: 6px; border-bottom: 1px dashed var(--line); }
+
+  .footer { color: var(--ink-dim); font-size: 12px; margin-top: 36px; }
+</style>
+</head>
+<body>
+
+<h1>campspot-bot</h1>
+<p class="lede">
+Watches <strong>Upper Pines Campground</strong> (rec.gov id <code>232447</code>) for
+Thu&ndash;Sun stays through Sep&nbsp;30, and (optionally) drives a real Chrome to
+<strong>add the slot to your cart</strong> so the 15-minute hold protects it while you check out.
+</p>
+
+<h2>1. Architecture</h2>
+<div class="arch">
+  <div class="box">
+    <h3>CampspotChecker</h3>
+    <div class="meta">
+      Hits the public availability API every <code>pollIntervalMs</code>.
+      Merges multiple months. Memorizes stays it's already seen so the same
+      opening doesn't fire twice.
+    </div>
+    <pre>GET .../api/camps/availability/
+   campground/232447/month
+   ?start_date=2026-07-01T00:00:00Z</pre>
+  </div>
+  <div class="arrow">&rarr;</div>
+  <div class="box">
+    <h3>findStays</h3>
+    <div class="meta">
+      Pure date logic. Walks each campsite's daily map and emits
+      consecutive runs of <em>Available</em> nights that fall entirely on
+      Thu/Fri/Sat/Sun, capped at 4 nights. Ranks longest&nbsp;&rarr;&nbsp;earliest.
+    </div>
+    <pre>stay = { siteNo, startDate,
+         endDate, nights }</pre>
+  </div>
+  <div class="arrow">&rarr;</div>
+  <div class="box">
+    <h3>CampspotCartBot</h3>
+    <div class="meta">
+      Playwright-driven Chromium that re-uses the rec.gov session you logged in
+      with via <code>permit-bot</code>. Clicks the Available cell, then
+      <strong>Add to Cart</strong>, then verifies <code>/cart</code>.
+    </div>
+    <pre>page.click('[aria-label=
+  "Jul 9, 2026 - Site 068
+   is available"]')</pre>
+  </div>
+</div>
+
+<h2>2. What counts as a "stay"</h2>
+<div class="row">
+  <div class="panel">
+    <p class="lede">A stay is the <strong>longest contiguous run of Available nights</strong> within Thu&ndash;Sun, capped at 4. Each run also gets sliced so no run exceeds the cap.</p>
+    <ul>
+      <li>Mon/Tue/Wed break the run automatically &mdash; they're not in <code>targetWeekdays</code>.</li>
+      <li><code>Reserved</code>, <code>Closed</code>, and missing entries break the run.</li>
+      <li>Ranking: most nights first, then earliest start, then lowest site number.</li>
+      <li>Dedup: a stay only fires once per "open period." If it closes &amp; reopens, it fires again.</li>
+    </ul>
+  </div>
+  <div>
+    <div class="cal">
+      <div class="h">Mon</div><div class="h">Tue</div><div class="h">Wed</div>
+      <div class="h">Thu</div><div class="h">Fri</div><div class="h">Sat</div><div class="h">Sun</div>
+      <div class="d out">6</div><div class="d out">7</div><div class="d out">8</div>
+      <div class="d avail">9</div><div class="d avail">10</div><div class="d avail">11</div><div class="d avail">12</div>
+      <div class="d out">13</div><div class="d out">14</div><div class="d out">15</div>
+      <div class="d target">16</div><div class="d res">17</div><div class="d target">18</div><div class="d target">19</div>
+      <div class="legend">
+        <span class="pill live">avail night</span>
+        <span class="pill">target weekday, reserved/missing</span>
+        <span class="pill">non-target weekday</span>
+        <br>
+        Jul 9&ndash;12 emits a <strong>4-night stay</strong>. Jul 16 is alone (Fri reserved breaks the run). Jul 18&ndash;19 is a 2-nighter.
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>3. Poll loop (every <code>pollIntervalMs</code>)</h2>
+<div class="panel">
+<div class="seq">
+  <div class="t">+0ms</div><div class="e">Fetch each month in the configured window (one HTTP request per month).</div>
+  <div class="t">+~400ms</div><div class="e">Merge months &rarr; <code>findAllStays</code> &rarr; <code>rankStays</code>.</div>
+  <div class="t"></div><div class="e">Compare against <code>lastSeenStays</code>. Anything not seen since last poll is <em>new</em>.</div>
+  <div class="t">on new</div><div class="e">Discord push: <code>{header, bullets per stay, booking URLs}</code>. ntfy push with tap-action to the rec.gov page.</div>
+  <div class="t">on new + <code>--auto-grab</code></div><div class="e">Fire <code>CampspotCartBot</code> on the top-ranked new stay (one at a time; 1-hour cooldown per (site, dates) so we don't retry the same loss).</div>
+  <div class="t">on 429 / 5xx</div><div class="e">Exponential backoff up to 5 min. Honors <code>Retry-After</code>. Stops hammering the API.</div>
+  <div class="t">sleep</div><div class="e">Wait <code>pollIntervalMs</code> minus elapsed, plus backoff. Repeat.</div>
+</div>
+</div>
+
+<h2>4. The cart automation, step by step</h2>
+<div class="panel">
+<ol class="steps">
+  <li>Open <code>https://www.recreation.gov/camping/campgrounds/232447?startdate=&lt;X&gt;&amp;enddate=&lt;Y&gt;</code> in a headed Chromium (same profile as permit-bot so the rec.gov cookie carries over).</li>
+  <li>If a re-auth modal pops, fill it via <code>handleLoginModalIfPresent</code> from permit-bot.</li>
+  <li>Advance the calendar via <code>button[aria-label="Go Forward 5 Days"]</code> until the target date column is in the grid (up to 60 advances &asymp; 300 days).</li>
+  <li>Locate the cell:<br><code>[aria-label="Sep 11, 2026 - Site 068 is available" i]</code></li>
+  <li>Click it. A single click is enough because the page derives the trip range from the URL params.</li>
+  <li>Click <code>#add-cart-campsite</code> ("Add to Cart"). Re-runs the login-modal handler in case rec.gov demands a fresh auth.</li>
+  <li>Open <code>/cart</code> in a fresh tab. Verify body text contains <code>Site &lt;N&gt;</code> AND the start date. Screenshot.</li>
+  <li>Post outcome to Discord with the cart screenshot attached.</li>
+</ol>
+<p class="lede" style="margin-top:14px">If the cell isn't found after the calendar advances, the bot exits with <code>cell_not_available</code> instead of clicking blindly &mdash; the slot was taken between the API poll and the click.</p>
+</div>
+
+<h2>5. Run modes</h2>
+<table>
+  <thead><tr><th>Command</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr>
+      <td class="cmd"><code>check</code></td>
+      <td>One-shot scan. Prints every qualifying stay (sorted). No browser, no notifications. <span class="pill">safe, read-only</span></td>
+    </tr>
+    <tr>
+      <td class="cmd"><code>cart --site=068 --start=&hellip; --end=&hellip;</code></td>
+      <td>Dry-run. Opens Chromium, advances calendar, locates the cell, screenshots. Does NOT click Add&nbsp;to&nbsp;Cart. <span class="pill">safe</span></td>
+    </tr>
+    <tr>
+      <td class="cmd"><code>cart &hellip; --for-real</code></td>
+      <td>Same flow, but clicks Add&nbsp;to&nbsp;Cart and verifies the hold. <span class="pill warn">creates a real 15-min hold</span></td>
+    </tr>
+    <tr>
+      <td class="cmd"><code>watch</code></td>
+      <td>Polls forever. Discord/ntfy on new openings. No cart. <span class="pill live">recommended start mode</span></td>
+    </tr>
+    <tr>
+      <td class="cmd"><code>watch --auto-grab</code></td>
+      <td>Polls forever. On a new opening, fires <code>--for-real</code> automatically on the top-ranked stay. <span class="pill warn">creates real holds</span></td>
+    </tr>
+    <tr>
+      <td class="cmd"><code>release-cart</code></td>
+      <td>Test cleanup. Clicks every Remove button on <code>/cart</code>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>6. Config knobs (<code>campspot-bot/config.json</code>)</h2>
+<pre>{
+  "campgroundId": "232447",            // Upper Pines
+  "rangeStartDate": "2026-06-22",      // window inclusive
+  "rangeEndDate":   "2026-09-30",
+  "targetWeekdays": ["Thu","Fri","Sat","Sun"],
+  "maxNights": 4,                      // cap on stay length
+  "minNights": 1,                      // drop shorter stays (raise to 2 to skip 1-nighters)
+  "pollIntervalMs": 60000,             // 60s default
+  "autoCart": false                    // informational; CLI flag controls the actual mode
+}</pre>
+
+<h2>7. What I checked vs. what's untested live</h2>
+<div class="row">
+  <div class="panel">
+    <strong style="color:var(--accent)">Confirmed against rec.gov on 2026-06-22:</strong>
+    <ul>
+      <li>API payload shape and that the multi-month merge works.</li>
+      <li>Cell aria-label format: <code>"Sep 8, 2026 - Site 046 is available"</code> (lowercase available).</li>
+      <li>Calendar "Go Forward 5 Days" navigation lands on the target date.</li>
+      <li>Single click on the Available cell makes <strong>Add to Cart</strong> appear.</li>
+      <li>Dry-run cart succeeded against a live slot (Site 068, Jun 22).</li>
+    </ul>
+  </div>
+  <div class="panel">
+    <strong style="color:var(--warn)">Not yet exercised live:</strong>
+    <ul>
+      <li>The actual Add&nbsp;to&nbsp;Cart click and <code>/cart</code> hold verification. Selectors are the same as the dry-run path plus the login-modal handler, but the for-real path will only get fully validated the first time a real opening fires.</li>
+    </ul>
+    <p>Right now the campground is essentially fully booked through Sep&nbsp;30, so the first real test will happen when something opens up.</p>
+  </div>
+</div>
+
+<p class="footer">
+Source: <code>campspot-bot/</code> on branch <code>worktree-campspot-bot</code>.
+Re-uses the rec.gov login from <code>permit-bot/.chromium-profile</code> &mdash; run
+<code>node permit-bot/permit-bot.mjs login --account=1</code> once before any
+<code>--for-real</code> cart op.
+</p>
+
+</body>
+</html>

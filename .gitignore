@@ -17,3 +17,8 @@ permit-bot/.last-page-snapshot.html
 permit-bot/.dom-fingerprint.json
 permit-bot/logs/
 permit-bot/reports/
+
+campspot-bot/.screenshots/
+campspot-bot/.traces/
+campspot-bot/logs/
+campspot-bot/.chromium-probe/
