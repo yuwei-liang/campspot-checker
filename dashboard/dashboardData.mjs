@@ -1,57 +1,21 @@
-// Aggregator: collects state from all three bots and returns one JSON for the
-// dashboard.
-//   - legacy campground-checker: in-process via Checker.getStatus().
-//   - permit-bot:  derived from its session JSONL.
+// Aggregator: collects state from the two active bots and returns one JSON
+// for the dashboard.
+//   - permit-bot:   derived from its session JSONL.
 //   - campspot-bot: read from campspot-bot/state/status.json.
+//
+// Pitchwatch (the legacy campground checker baked into server.mjs) was
+// retired 2026-06-22 — campspot-bot's auto-cart flow covers the use case
+// end-to-end now. server.mjs is dashboard-only.
 import path from 'node:path'
 import { readBotState, classifyLiveness, isPidAlive } from './botState.mjs'
 import { readPermitBotState } from './permitBotState.mjs'
 
 const CAMPSPOT_STATE_FILE = path.resolve('./campspot-bot/state/status.json')
 
-export function buildDashboardData({ checker, config }) {
+export function buildDashboardData() {
     const now = new Date().toISOString()
 
-    // --- Bot 1: legacy campground-checker -----------------------------------
-    const legacyStatus = checker.getStatus()
-    const legacyOpenings = legacyStatus.campgrounds.reduce(
-        (n, cg) => n + (cg.availableSites?.length || 0), 0,
-    )
-    const legacy = {
-        bot: 'pitchwatch',
-        label: 'Pitchwatch (legacy campground checker)',
-        mode: 'watch (notify-only)',
-        pid: process.pid,
-        liveness: 'live', // it's in the same process
-        startedAt: null,
-        lastHeartbeat: now,
-        config: {
-            targetDates: legacyStatus.targetDates,
-            pollIntervalMs: legacyStatus.pollIntervalMs ?? config.pollIntervalMs,
-            campgroundCount: legacyStatus.campgrounds.length,
-        },
-        metrics: {
-            cycles: legacyStatus.cycle?.cycleCount ?? 0,
-            campgrounds: legacyStatus.campgrounds.length,
-            openCampgrounds: legacyStatus.campgrounds.filter(c => c.status === 'available').length,
-            openSites: legacyOpenings,
-            backoffMs: legacyStatus.backoffMs,
-            errors: legacyStatus.campgrounds.filter(c => c.status === 'error').length,
-        },
-        cycle: legacyStatus.cycle,
-        campgrounds: legacyStatus.campgrounds.map(c => ({
-            id: c.id,
-            name: c.name,
-            park: c.park,
-            enabled: c.enabled,
-            status: c.status,
-            lastPolledAt: c.lastPolledAt,
-            availableByDate: c.availableByDate,
-            siteCount: c.availableSites?.length || 0,
-        })),
-    }
-
-    // --- Bot 2: permit-bot --------------------------------------------------
+    // --- permit-bot ---------------------------------------------------------
     const permit = readPermitBotState()
     const permitView = permit.present ? {
         bot: 'permit-bot',
@@ -77,7 +41,7 @@ export function buildDashboardData({ checker, config }) {
         absentReason: permit.reason,
     }
 
-    // --- Bot 3: campspot-bot ------------------------------------------------
+    // --- campspot-bot -------------------------------------------------------
     const campspot = readBotState(CAMPSPOT_STATE_FILE)
     const campspotView = campspot ? {
         ...campspot,
@@ -99,6 +63,6 @@ export function buildDashboardData({ checker, config }) {
 
     return {
         serverTime: now,
-        bots: [legacy, permitView, campspotView],
+        bots: [permitView, campspotView],
     }
 }

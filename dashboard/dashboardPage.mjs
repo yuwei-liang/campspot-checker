@@ -108,21 +108,6 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
 
   .absent-card { color: var(--ink-dim); padding: 16px 0; font-size: 13px; }
 
-  .legacy-cgs {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px;
-  }
-  .cg {
-    padding: 8px 10px; border-radius: 6px;
-    border: 1px solid var(--line); background: var(--panel-2);
-    font-size: 12px;
-  }
-  .cg .name { font-weight: 600; color: var(--ink); }
-  .cg .stat { color: var(--ink-dim); font-size: 11px; margin-top: 2px; }
-  .cg.available { border-color: rgba(110,231,183,0.45); background: rgba(110,231,183,0.08); }
-  .cg.error { border-color: rgba(248,113,113,0.45); }
-  .cg .stat.good { color: var(--accent); }
-  .cg .stat.err { color: var(--warn); }
-
   .links { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; font-size: 12.5px; }
   .links a { color: var(--accent-3); text-decoration: none; }
   .links a:hover { text-decoration: underline; }
@@ -135,7 +120,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
 <div class="topbar">
   <div>
     <h1>Bots Dashboard</h1>
-    <p class="lede">Live status across pitchwatch (campground checker), permit-bot, campspot-bot. Auto-refreshes every 5s.</p>
+    <p class="lede">Live status across permit-bot and campspot-bot. Auto-refreshes every 5s.</p>
   </div>
   <div>
     <div class="meter"><span class="dot"></span><span id="meter-text">connecting&hellip;</span></div>
@@ -146,9 +131,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
 <div class="grid" id="grid"><!-- cards injected here --></div>
 
 <div class="footer">
-  Endpoints: <a href="/api/bots" style="color:var(--accent-3)">/api/bots</a> ·
-  <a href="/" style="color:var(--accent-3)">/</a> (legacy pitchwatch UI) ·
-  <a href="/api/status" style="color:var(--accent-3)">/api/status</a>
+  Endpoint: <a href="/api/bots" style="color:var(--accent-3)">/api/bots</a>
 </div>
 
 <script>
@@ -266,35 +249,6 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
     return head + rows + m + events;
   }
 
-  function renderLegacyCard(b) {
-    const liv = (b.liveness || 'unknown').toLowerCase();
-    const cfg = b.config || {};
-    const head = cardHeader(b);
-    const targetSummary = (cfg.targetDates || []).slice(0, 4).join(', ') + (cfg.targetDates?.length > 4 ? ' …' : '');
-    const rows =
-      '<div class="row"><span class="k">Target dates</span><span class="v mono">' + escape(targetSummary || '—') + '</span></div>' +
-      '<div class="row"><span class="k">Poll interval</span><span class="v mono">' + escape(cfg.pollIntervalMs || '—') + 'ms</span></div>' +
-      '<div class="row"><span class="k">Cycle</span><span class="v">' +
-        (b.cycle?.currentlyRunning ? '<strong>running</strong>' : 'idle') +
-        ' · last finished ' + ago(b.cycle?.lastFinishedAt) +
-      '</span></div>';
-    const m = metricsBlock(b.metrics, [
-      ['campgrounds', 'Tracked'],
-      ['openCampgrounds', 'With openings', 'good'],
-      ['openSites', 'Total sites', 'good'],
-      ['errors', 'Errors', 'warn'],
-    ]);
-    const cgs = (b.campgrounds || []).map(c => {
-      const klass = 'cg ' + (c.status === 'available' ? 'available' : c.status === 'error' ? 'error' : '');
-      const statClass = c.status === 'available' ? 'stat good' : c.status === 'error' ? 'stat err' : 'stat';
-      const detail = c.status === 'available'
-        ? c.siteCount + ' site(s) open'
-        : c.status === 'error' ? 'error' : c.enabled ? 'all reserved' : 'disabled';
-      return '<div class="' + klass + '"><div class="name">' + escape(c.name) + '</div><div class="' + statClass + '">' + detail + ' · ' + ago(c.lastPolledAt) + '</div></div>';
-    }).join('');
-    return head + rows + m + '<div class="section-title">Campgrounds</div><div class="legacy-cgs">' + cgs + '</div>';
-  }
-
   function cardHeader(b) {
     const liv = (b.liveness || 'unknown').toLowerCase();
     return '<div class="card-head">' +
@@ -309,7 +263,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
     grid.innerHTML = data.bots.map(b => {
       const inner = b.bot === 'campspot-bot' ? renderCampspotCard(b)
         : b.bot === 'permit-bot' ? renderPermitBotCard(b)
-        : renderLegacyCard(b);
+        : '<div class="absent-card">Unknown bot: ' + escape(b.bot) + '</div>';
       return '<div class="card">' + inner + '</div>';
     }).join('');
   }
