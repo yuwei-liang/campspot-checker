@@ -768,23 +768,29 @@ async function cmdWatchAuto({
                 : ` — kept watching (attempt ${consecutiveAllFail + 1})`
         await discordPush(`${summary} — ${date} — fired ${plan.shots.length} shot(s)${summarySuffix}`)
 
-        // Exit/continue logic. Critical T3 fix: don't exit on all-fail.
+        // Exit/continue logic.
+        // 06-22 update: capping at 3 strikes with a 90s cooldown between
+        // attempts (was 5×30s). The 06-16 race showed our old burst rate
+        // (5 fires in 8 min) tripped rec.gov's reCAPTCHA v3 score and
+        // triggered visible challenges that blocked subsequent clicks. After
+        // 3 strikes we SLEEP 30 min instead of shutting down — the bot keeps
+        // polling and can fire again later (echo windows, next attempt the
+        // following race day). Shutting down silently lost us six race days
+        // 06-17 through 06-22.
         if (allHeld || !allFailed) {
             firedThisRun = true
             consecutiveAllFail = 0
         } else {
             consecutiveAllFail += 1
-            // Safety valve: after 5 consecutive total failures, give up so we
-            // don't burn forever against a broken page (selectors changed,
-            // rec.gov maintenance, etc).
-            if (consecutiveAllFail >= 5) {
-                log.error('5 consecutive all-fails. Shutting down.')
-                await discordPush('🔴 **watch-auto giving up: 5 consecutive all-fail attempts.** Selectors may have broken — check the session log.')
-                firedThisRun = true
+            if (consecutiveAllFail >= 3) {
+                log.warn('3 consecutive all-fails — pausing fires for 30 min, watcher stays alive.')
+                await discordPush('🟡 **watch-auto: 3 consecutive all-fail attempts. Pausing fires for 30 min** (watcher stays alive — polls + heartbeat continue).')
+                await new Promise(r => setTimeout(r, 30 * 60 * 1000))
+                consecutiveAllFail = 0
             } else {
-                // Brief cooldown so we don't immediately re-fire against the
-                // same broken state.
-                await new Promise(r => setTimeout(r, 30_000))
+                // 90s human-paced cooldown — slow enough not to look scripted,
+                // fast enough to catch a slot-recycling echo.
+                await new Promise(r => setTimeout(r, 90_000))
             }
         }
     }

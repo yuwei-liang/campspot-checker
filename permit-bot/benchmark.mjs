@@ -1,9 +1,10 @@
 import axios from 'axios'
 import { httpsAgent } from './dnsBypass.mjs'
 
+// Kept in sync with PermitChecker.mjs USER_AGENT (06-22 bump).
 const USER_AGENT =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 function urlFor(permitId, monthStartIso, monthEndIso) {
     return `https://www.recreation.gov/api/permitinyo/${permitId}/availability` +
