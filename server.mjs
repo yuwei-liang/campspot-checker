@@ -44,6 +44,8 @@ import { createWeatherRepo } from './availability-checker/db/weatherRepo.mjs'
 import { scheduleWeatherRefresh } from './availability-checker/weatherService.mjs'
 import { STATUS_PAGE_HTML } from './availability-checker/statusPage.mjs'
 import { ABOUT_PAGE_HTML } from './availability-checker/aboutPage.mjs'
+import { DASHBOARD_PAGE_HTML } from './dashboard/dashboardPage.mjs'
+import { buildDashboardData } from './dashboard/dashboardData.mjs'
 import express from 'express'
 
 const PORT = Number.parseInt(process.env.PORT || '8787', 10)
@@ -138,6 +140,17 @@ app.get('/api/status', (req, res) => {
         serverTime: new Date().toISOString(),
         discordInviteUrl: process.env.DISCORD_INVITE_URL || null,
     });
+});
+app.get('/bots', (req, res) => {
+    res.type('html').send(DASHBOARD_PAGE_HTML);
+});
+app.get('/api/bots', (req, res) => {
+    try {
+        res.json(buildDashboardData({ checker, config }));
+    } catch (err) {
+        logger.error(`buildDashboardData: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
 });
 app.get('/api/history', (req, res) => {
     const limit = Math.min(Number.parseInt(req.query.limit, 10) || 50, 500)
