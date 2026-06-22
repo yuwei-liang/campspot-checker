@@ -5,16 +5,23 @@
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
 import path from 'node:path'
 
-const LOG_DIR = path.resolve('./permit-bot/logs')
+// Resolve at call time, not module load: lets tests / multi-checkout setups
+// override via PERMIT_BOT_LOG_DIR without restarting. Defaults to the path
+// permit-bot writes from `process.cwd()`, which Just Works when the dashboard
+// runs out of the same checkout as the bot.
+function logDir() {
+    return path.resolve(process.env.PERMIT_BOT_LOG_DIR || './permit-bot/logs')
+}
 
 // Latest log file by mtime. Returns null if dir / files missing.
 export function latestPermitBotLog() {
-    if (!existsSync(LOG_DIR)) return null
-    const files = readdirSync(LOG_DIR)
+    const dir = logDir()
+    if (!existsSync(dir)) return null
+    const files = readdirSync(dir)
         .filter(f => /^watch-auto-.+\.jsonl$/.test(f))
-        .map(f => ({ f, mtime: statSync(path.join(LOG_DIR, f)).mtimeMs }))
+        .map(f => ({ f, mtime: statSync(path.join(dir, f)).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime)
-    return files[0] ? path.join(LOG_DIR, files[0].f) : null
+    return files[0] ? path.join(dir, files[0].f) : null
 }
 
 // Read every line of the latest log. For our use the logs stay small (~1MB)
@@ -49,10 +56,14 @@ export function readPermitBotState() {
     const fires = events.filter(e => e.event === 'fire_results')
     const heldShots = fires.flatMap(f => f.results || []).filter(r => r.cartState === 'held').length
     const errors = events.filter(e => e.event === 'poll_error').length
+    // High-signal events only — prewarm + warm_dom_inventory fire once at
+    // startup and dwarf everything else. Keep verify_config / warm_row_check
+    // because they surface drift.
     const recentEvents = events
-        .filter(e => /^(new|decision|fire_results|prewarm|warm_row_check_failed|verify_config|heartbeat)$/.test(e.event))
+        .filter(e => /^(decision|decision_skipped|fire_results|warm_row_check_failed|verify_config|heartbeat|shutdown)$/.test(e.event))
         .slice(-30)
         .reverse()
+        .map(e => ({ type: e.event, ts: e.ts, ...e }))
 
     return {
         present: true,

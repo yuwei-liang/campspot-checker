@@ -180,11 +180,19 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
             : e.type === 'decision'
               ? 'plan ' + escape(e.plan?.kind || '?') + ' party=' + escape(e.plan?.partySize) + ' on ' + escape(e.date)
               : e.type === 'heartbeat'
-                ? 'polls=' + escape(e.pollCount) + ' uptimeMin=' + escape(e.uptimeMin) + (e.flags?.length ? ' flags=[' + e.flags.join(',') + ']' : '')
+                ? 'polls=' + escape(e.pollCount) + ' uptime=' + escape(e.uptimeMin) + 'min' + (e.flags?.length ? ' flags=[' + e.flags.join(',') + ']' : '')
               : e.type === 'startup'
                 ? 'mode=' + escape(e.mode || '—')
               : e.type === 'poll_error'
                 ? escape(e.error || '') + ' (backoff ' + escape(e.backoffMs ?? 0) + 'ms)'
+              : e.type === 'decision_skipped'
+                ? escape(e.date) + ' skipped: ' + escape(e.reason || '')
+              : e.type === 'verify_config'
+                ? (e.ok ? 'OK' : 'DRIFT: ' + escape((e.errors || []).join('; ')))
+              : e.type === 'warm_row_check_failed'
+                ? 'warm row check failed for ' + (e.missing || []).map(m => escape(m.name)).join(', ')
+              : e.type === 'shutdown'
+                ? 'polls=' + escape(e.pollCount ?? '—') + ' uptimeMs=' + escape(e.uptimeMs ?? '—')
                 : escape(JSON.stringify(e).slice(0, 140));
       const t = (e.ts || '').slice(11, 19);
       return '<div class="ev"><div class="t">' + escape(t) + '</div><div class="type ' + escape(e.type) + '">' + escape(e.type) + '</div><div class="body">' + body + '</div></div>';
