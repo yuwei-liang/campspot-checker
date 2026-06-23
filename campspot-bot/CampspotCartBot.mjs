@@ -108,6 +108,11 @@ export function lastNightOf(startDate, endDate) {
     return new Date(lastNightMs).toISOString().slice(0, 10)
 }
 
+function humanDate(yyyymmdd) {
+    const [y, m, d] = yyyymmdd.split('-').map(Number)
+    return `${MONTH_NAMES[m - 1]} ${d}, ${y}`
+}
+
 // One-shot: navigate to /cart in a fresh tab and read the body text to verify
 // the hold. Returns { state, cartText, cartShot, observed }.
 //
@@ -126,10 +131,6 @@ export function lastNightOf(startDate, endDate) {
 //   'has_items_but_not_target' → cart has SOMETHING but not our site/date
 //   'empty'       → empty cart
 //   'unknown'     → couldn't parse
-function humanDate(yyyymmdd) {
-    const [y, m, d] = yyyymmdd.split('-').map(Number)
-    return `${MONTH_NAMES[m - 1]} ${d}, ${y}`
-}
 async function verifyCartHold(ctx, { siteNo, startDate, endDate, screenshotPath }) {
     const cartPage = await ctx.newPage()
     let cartShot = null
@@ -231,14 +232,13 @@ export async function tryGrabCampsite({
         await page.waitForTimeout(1200)
 
         // Step 3b: for multi-night stays, ALSO click the last-night cell.
-        // (Verified 2026-06-22: single click on the start cell is interpreted
-        // as a 1-night stay regardless of URL `enddate`. To get N nights,
-        // click both endpoints — rec.gov range-selects the span between.)
+        // (Verified 2026-06-22 by a real auto-grab gone wrong: a single click
+        // on the start cell is interpreted as a 1-night stay regardless of
+        // URL `enddate`. To get N nights, click both endpoints — rec.gov
+        // range-selects the span between.)
         const lastNight = lastNightOf(startDate, endDate)
         if (lastNight && lastNight !== startDate) {
             log.info(`Step 3b: click last-night cell (${lastNight}) for range select`)
-            // The last-night cell may be on a different visible window if the
-            // trip spans the grid edge — advance forward until visible.
             await advanceCalendarTo(page, lastNight, { log, maxAdvances: 6 })
             const endCell = await findAvailableCell(page, { siteNo, date: lastNight })
             if (!endCell) {
@@ -289,8 +289,9 @@ export async function tryGrabCampsite({
         log.info(`Cart state: ${cartState} (observed checkIn=${observed.checkIn}, checkOut=${observed.checkOut})`)
 
         // Step 6: if rec.gov gave us the wrong trip (e.g. 1 night instead of
-        // 4), release the hold immediately so it doesn't squat on the
-        // account for 15 minutes when it's the wrong reservation.
+        // 4 because we only clicked the start cell), release the hold
+        // immediately so it doesn't squat on the account for 15 minutes for
+        // the wrong reservation.
         if (cartState === 'wrong_trip') {
             log.warn(`wrong_trip detected — releasing hold (wanted ${startDate}→${endDate}, got checkOut=${observed.checkOut})`)
             try {
