@@ -97,38 +97,74 @@ export async function findAvailableCell(page, { siteNo, date }) {
     return (await cell.count()) > 0 ? cell : null
 }
 
+// Step back one calendar day from endDate (the checkout) to get the last
+// NIGHT's date. Multi-night range selection clicks both the first-night cell
+// and the last-night cell.
+export function lastNightOf(startDate, endDate) {
+    const sMs = Date.parse(`${startDate}T00:00:00Z`)
+    const eMs = Date.parse(`${endDate}T00:00:00Z`)
+    if (!Number.isFinite(sMs) || !Number.isFinite(eMs) || eMs <= sMs) return null
+    const lastNightMs = eMs - 86400000
+    return new Date(lastNightMs).toISOString().slice(0, 10)
+}
+
 // One-shot: navigate to /cart in a fresh tab and read the body text to verify
-// the hold. Returns { state: 'held' | 'empty' | 'has_items_but_not_target' |
-// 'unknown', cartText, cartShot }.
+// the hold. Returns { state, cartText, cartShot, observed }.
 //
 // rec.gov cart format (verified 2026-06-22 by a real auto-grab):
-//   "192, Upper Pines RV NONELECTRIC"
-//   "Check-In Date: Sun Sep 13, 2026"
-// So we match site number + a human-formatted date ("Sep 13") rather than the
-// ISO start date. Two-signal AND-match avoids false-positives from a stale
-// prior hold for a different (site, date).
+//   "003, Upper Pines STANDARD NONELECTRIC"
+//   "Check-In Date: Thu Jun 25, 2026"
+//   "Check-Out Date: Fri Jun 26, 2026"
+//
+// States:
+//   'held'        → cart has site + correct check-in AND check-out
+//   'wrong_trip'  → cart has site + correct check-in but wrong check-out
+//                   (the multi-night bug from 2026-06-22: rec.gov gave us 1
+//                    night instead of N because we only clicked one cell).
+//                   Caller should release this hold immediately so it doesn't
+//                   squat on the user's account.
+//   'has_items_but_not_target' → cart has SOMETHING but not our site/date
+//   'empty'       → empty cart
+//   'unknown'     → couldn't parse
+function humanDate(yyyymmdd) {
+    const [y, m, d] = yyyymmdd.split('-').map(Number)
+    return `${MONTH_NAMES[m - 1]} ${d}, ${y}`
+}
 async function verifyCartHold(ctx, { siteNo, startDate, endDate, screenshotPath }) {
     const cartPage = await ctx.newPage()
     let cartShot = null
     let state = 'unknown'
     let cartText = ''
+    const observed = { checkIn: null, checkOut: null }
     try {
         await cartPage.goto('https://www.recreation.gov/cart', { waitUntil: 'domcontentloaded', timeout: 20000 })
         await cartPage.waitForTimeout(2500)
         cartShot = screenshotPath('cart')
         await cartPage.screenshot({ path: cartShot, fullPage: true })
         cartText = await cartPage.evaluate(() => document.body.innerText)
-        const lower = cartText.toLowerCase()
-        const [sy, sm, sd] = startDate.split('-').map(Number)
-        const humanDate = `${MONTH_NAMES[sm - 1]} ${sd}, ${sy}`.toLowerCase()
+
+        // Pull the literal check-in / check-out lines so we can report what we
+        // actually got, not just true/false. Pattern: "Check-In Date: Thu Jun 25, 2026".
+        const ciMatch = cartText.match(/Check-In Date:\s*\w+\s+(\w+)\s+(\d+),\s+(\d{4})/i)
+        const coMatch = cartText.match(/Check-Out Date:\s*\w+\s+(\w+)\s+(\d+),\s+(\d{4})/i)
+        if (ciMatch) observed.checkIn = `${ciMatch[1]} ${ciMatch[2]}, ${ciMatch[3]}`
+        if (coMatch) observed.checkOut = `${coMatch[1]} ${coMatch[2]}, ${coMatch[3]}`
+
+        const startHuman = humanDate(startDate)
+        const endHuman = humanDate(endDate)
         const sitePattern = new RegExp(`(?:^|\\W)${siteNo.replace(/^0+/, '0*')}(?:,|\\s)`, 'i')
+        const siteOk = sitePattern.test(cartText)
+        const startOk = observed.checkIn?.toLowerCase() === startHuman.toLowerCase()
+        const endOk = observed.checkOut?.toLowerCase() === endHuman.toLowerCase()
+
         if (/your cart is empty/i.test(cartText)) state = 'empty'
-        else if (sitePattern.test(cartText) && lower.includes(humanDate)) state = 'held'
+        else if (siteOk && startOk && endOk) state = 'held'
+        else if (siteOk && startOk && !endOk) state = 'wrong_trip'
         else if (/cart/i.test(cartText)) state = 'has_items_but_not_target'
     } finally {
         await cartPage.close().catch(() => {})
     }
-    return { state, cartText, cartShot }
+    return { state, cartText, cartShot, observed }
 }
 
 // Add a single (campsiteId, siteNo, startDate, endDate) stay to the cart.
@@ -189,10 +225,31 @@ export async function tryGrabCampsite({
             return { ok: true, dryRun: true, ctx, page }
         }
 
-        // Step 3: click the start cell to select the site for this trip range.
-        log.info('Step 3: click Available cell')
+        // Step 3a: click the start cell — this picks the first night.
+        log.info('Step 3a: click start cell (first night)')
         await cell.click()
-        await page.waitForTimeout(1500)
+        await page.waitForTimeout(1200)
+
+        // Step 3b: for multi-night stays, ALSO click the last-night cell.
+        // (Verified 2026-06-22: single click on the start cell is interpreted
+        // as a 1-night stay regardless of URL `enddate`. To get N nights,
+        // click both endpoints — rec.gov range-selects the span between.)
+        const lastNight = lastNightOf(startDate, endDate)
+        if (lastNight && lastNight !== startDate) {
+            log.info(`Step 3b: click last-night cell (${lastNight}) for range select`)
+            // The last-night cell may be on a different visible window if the
+            // trip spans the grid edge — advance forward until visible.
+            await advanceCalendarTo(page, lastNight, { log, maxAdvances: 6 })
+            const endCell = await findAvailableCell(page, { siteNo, date: lastNight })
+            if (!endCell) {
+                log.warn(`No Available cell for last-night ${lastNight} on site ${siteNo} — slot likely partially taken`)
+                await page.screenshot({ path: screenshotPath('err-no-end-cell'), fullPage: true })
+                return { ok: false, reason: 'last_night_cell_missing', ctx, page }
+            }
+            await endCell.scrollIntoViewIfNeeded().catch(() => {})
+            await endCell.click()
+            await page.waitForTimeout(1200)
+        }
         await page.screenshot({ path: screenshotPath('02-after-cell-click'), fullPage: true })
 
         // Step 4: click "Add to Cart". The button appears after the cell click
@@ -223,13 +280,26 @@ export async function tryGrabCampsite({
 
         // Step 5: verify the hold by visiting /cart in a fresh tab.
         log.info('Step 5: verify cart')
-        const { state: cartState, cartText, cartShot } = await verifyCartHold(ctx, {
+        const { state: cartState, cartText, cartShot, observed } = await verifyCartHold(ctx, {
             siteNo,
             startDate,
             endDate,
             screenshotPath,
         })
-        log.info(`Cart state: ${cartState}`)
+        log.info(`Cart state: ${cartState} (observed checkIn=${observed.checkIn}, checkOut=${observed.checkOut})`)
+
+        // Step 6: if rec.gov gave us the wrong trip (e.g. 1 night instead of
+        // 4), release the hold immediately so it doesn't squat on the
+        // account for 15 minutes when it's the wrong reservation.
+        if (cartState === 'wrong_trip') {
+            log.warn(`wrong_trip detected — releasing hold (wanted ${startDate}→${endDate}, got checkOut=${observed.checkOut})`)
+            try {
+                const r = await releaseCampspotCart({ accountIndex, log })
+                log.info(`released stale wrong_trip hold: removed=${r.removed} state=${r.state}`)
+            } catch (err) {
+                log.warn(`auto-release after wrong_trip failed: ${err.message}`)
+            }
+        }
 
         return {
             ok: true,
@@ -240,6 +310,7 @@ export async function tryGrabCampsite({
             cartState,
             cartShot,
             cartText: cartText.slice(0, 1500),
+            observed,
         }
     } catch (err) {
         log.error(`tryGrabCampsite error: ${err.message}`)
