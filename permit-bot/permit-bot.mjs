@@ -402,6 +402,8 @@ async function cmdWatchAuto({
     hiName = null,
     gpDiv = null,
     gpName = null,
+    hiAcct = 1,   // account index for HI/solo shot
+    gpAcct = 2,   // account index for GP/split shot
 } = {}) {
     const config = loadConfig()
     // LYV-specific division IDs (must match decision.mjs).
@@ -509,16 +511,32 @@ async function cmdWatchAuto({
         `Heartbeat every 30 min until grab or shutdown.`,
     ].join('\n'))
 
-    // Pre-warm BOTH accounts in parallel — acct1 on Happy Isles party=7 (solo
-    // case), acct2 on Glacier Point party=6 (split case where gp ≤ 6). T11
-    // autonomously downgrades party on the fly if remaining < pinned size, so
-    // both warmers can also handle smaller-party plans without rebuilding.
+    // Pre-warm BOTH accounts in parallel — HI account on Happy Isles party=7
+    // (solo case), GP account on Glacier Point party=6 (split case where gp
+    // ≤ 6). Account assignment is configurable via --hi-acct/--gp-acct so the
+    // bot can share a machine with campspot-bot (which holds account 1's
+    // chromium profile lock for its warm window). Default 1/2 matches the
+    // historical wiring.
+    //
+    // If hiAcct === gpAcct we dedup the warmer specs: two persistent contexts
+    // on one profile dir would race on the disk lock. The single warmer can
+    // still fire either HI or GP shot when the watch loop decides — see
+    // findWarmer below which falls back gracefully.
     const warmers = []
     if (preWarm) {
-        const specs = [
-            { accountIndex: 1, target: HI_TARGET, partySize: 7, role: 'HI/solo' },
-            { accountIndex: 2, target: GP_TARGET, partySize: 6, role: 'GP/split' },
+        const allSpecs = [
+            { accountIndex: hiAcct, target: HI_TARGET, partySize: 7, role: 'HI/solo' },
+            { accountIndex: gpAcct, target: GP_TARGET, partySize: 6, role: 'GP/split' },
         ]
+        const seen = new Set()
+        const specs = allSpecs.filter(s => {
+            if (seen.has(s.accountIndex)) return false
+            seen.add(s.accountIndex)
+            return true
+        })
+        if (specs.length < allSpecs.length) {
+            log.warn(`HI and GP both on acct${hiAcct} — collapsing to one warmer to avoid profile-dir lock conflict`)
+        }
         log.info(`Pre-warming ${specs.length} accounts in parallel: ${specs.map(s => `acct${s.accountIndex} ${s.role} party=${s.partySize}`).join(', ')}`)
         // Each warmer is briefed on BOTH LYV targets so it can sanity-check
         // that both rows are present at warm time. If one is missing, we
@@ -592,7 +610,11 @@ async function cmdWatchAuto({
     // right divisions. simulate mode points both at Cottonwood; explicit
     // --hi-div/--gp-div let us mix trailheads (e.g. real cross-trailhead test).
     const overrideTrailheads = !!(simulate || hiDiv || gpDiv)
-    const decideOpts = {}
+    const decideOpts = {
+        soloAccount: hiAcct,
+        hiAccount: hiAcct,
+        gpAccount: gpAcct,
+    }
     if (overrideTrailheads) {
         decideOpts.hiTrailhead = HI_TARGET
         decideOpts.gpTrailhead = GP_TARGET
@@ -1163,6 +1185,8 @@ const kv = Object.fromEntries(
                     hiName: kv['hi-name'] || null,
                     gpDiv: kv['gp-div'] || null,
                     gpName: kv['gp-name'] || null,
+                    hiAcct: kv['hi-acct'] != null ? Number(kv['hi-acct']) : 1,
+                    gpAcct: kv['gp-acct'] != null ? Number(kv['gp-acct']) : 2,
                     partyTargets: kv['party-targets']
                         ? kv['party-targets'].split(',').map(s => Number(s.trim())).filter(Number.isFinite)
                         : null,
