@@ -10,7 +10,13 @@ import path from 'node:path'
 import { readBotState, classifyLiveness, isPidAlive } from './botState.mjs'
 import { readPermitBotState } from './permitBotState.mjs'
 
-const CAMPSPOT_STATE_FILE = path.resolve('./campspot-bot/state/status.json')
+// Resolved at call time so the dashboard can read campspot-bot's state from a
+// different checkout via CAMPSPOT_STATE_FILE (symmetric to PERMIT_BOT_LOG_DIR).
+// Default is the running server's cwd, which Just Works when the dashboard
+// runs out of the same checkout as the bot.
+function campspotStateFile() {
+    return path.resolve(process.env.CAMPSPOT_STATE_FILE || './campspot-bot/state/status.json')
+}
 
 export function buildDashboardData() {
     const now = new Date().toISOString()
@@ -42,7 +48,7 @@ export function buildDashboardData() {
     }
 
     // --- campspot-bot -------------------------------------------------------
-    const campspot = readBotState(CAMPSPOT_STATE_FILE)
+    const campspot = readBotState(campspotStateFile())
     const campspotView = campspot ? {
         ...campspot,
         label: 'campspot-bot (Upper Pines auto-cart)',
