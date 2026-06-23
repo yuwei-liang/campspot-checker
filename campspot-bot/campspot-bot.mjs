@@ -9,7 +9,7 @@ import axios from 'axios'
 import FormData from 'form-data'
 
 import CampspotChecker from './CampspotChecker.mjs'
-import { tryGrabCampsite, releaseCampspotCart } from './CampspotCartBot.mjs'
+import { tryGrabCampsite, releaseCampspotCart, warmCampspotWindow } from './CampspotCartBot.mjs'
 import { httpsAgent } from '../permit-bot/dnsBypass.mjs'
 import { writeBotState, appendEvent } from '../dashboard/botState.mjs'
 
@@ -225,6 +225,36 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
     appendEvent(dashState, { type: 'startup', mode: dashState.mode })
     persistState()
 
+    // Warm window: keep one logged-in Chromium context alive across fires so
+    // we don't pay the ~6s cold-launch + login-modal latency on every grab.
+    // The 15-min cart hold is short and races are decided in seconds —
+    // warm vs cold is the difference between getting the slot and watching
+    // it disappear.
+    let warm = null
+    if (autoGrab) {
+        try {
+            warm = await warmCampspotWindow({
+                campgroundId: config.campgroundId,
+                accountIndex,
+                log,
+            })
+            appendEvent(dashState, { type: 'warm_ready', loggedIn: warm.loggedIn, email: warm.email })
+            persistState()
+        } catch (err) {
+            log.error(`warm window setup failed: ${err.message} — falling back to cold launch per fire`)
+            appendEvent(dashState, { type: 'warm_setup_failed', error: err.message })
+        }
+    }
+
+    // Periodic warm-window refresh: reload the campground page every 30 min
+    // so the session cookie + DOM stay live during long idle periods.
+    let warmRefreshTimer = null
+    if (warm) {
+        warmRefreshTimer = setInterval(() => {
+            warm.refresh().catch(err => log.warn(`warm refresh threw: ${err.message}`))
+        }, 30 * 60 * 1000)
+    }
+
     // Startup ping.
     await discordPush([
         '🟢 **campspot-bot watch started**',
@@ -232,6 +262,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
         `**Window:** ${config.rangeStartDate} → ${config.rangeEndDate}`,
         `**Weekdays:** ${config.targetWeekdays.join(', ')} · **Nights:** ${config.minNights}–${config.maxNights}`,
         `**Min capacity:** ${config.minPeople || 'any'} people`,
+        `**Warm window:** ${warm ? (warm.loggedIn ? 'on (logged in)' : 'on (NOT logged in — run permit-bot login)') : 'off'}`,
         `**Poll:** ${config.pollIntervalMs}ms · **Auto-cart:** ${autoGrab ? 'ON' : 'off'}`,
     ].join('\n'))
 
@@ -298,46 +329,84 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                         recentlyAttempted.set(key, Date.now())
                         ;(async () => {
                             try {
-                                log.info(`auto-grab: ${fmtStay(candidate)}`)
-                                const r = await tryGrabCampsite({
-                                    campgroundId: config.campgroundId,
-                                    campsiteId: candidate.campsiteId,
-                                    siteNo: candidate.siteNo,
-                                    startDate: candidate.startDate,
-                                    endDate: candidate.endDate,
-                                    dryRun: false,
-                                    accountIndex,
-                                    log,
-                                })
+                                // Pre-fire API recheck: confirm the full range is still
+                                // Available before we burn ~6s of browser dance.
+                                // Tonight's site 112 race lost because the last-night cell
+                                // disappeared 6s after detection; this catches that case
+                                // and either shortens the stay or skips the fire entirely.
+                                let toFire = candidate
+                                try {
+                                    const recheck = await checker.recheckStay(candidate)
+                                    if (!recheck.ok) {
+                                        log.warn(`recheck: all nights gone — skipping fire on ${candidate.siteNo}`)
+                                        appendEvent(dashState, {
+                                            type: 'recheck_collapsed',
+                                            siteNo: candidate.siteNo,
+                                            startDate: candidate.startDate,
+                                            endDate: candidate.endDate,
+                                        })
+                                        persistState()
+                                        cartInFlight = false
+                                        return
+                                    }
+                                    if (recheck.reason === 'shortened') {
+                                        log.warn(`recheck: range shortened ${candidate.nights}n → ${recheck.adjustedStay.nights}n (${candidate.startDate}→${recheck.adjustedStay.endDate})`)
+                                        appendEvent(dashState, {
+                                            type: 'recheck_shortened',
+                                            siteNo: candidate.siteNo,
+                                            originalNights: candidate.nights,
+                                            adjustedNights: recheck.adjustedStay.nights,
+                                        })
+                                        toFire = recheck.adjustedStay
+                                    }
+                                } catch (err) {
+                                    log.warn(`recheck threw: ${err.message} — proceeding with original range`)
+                                }
+                                log.info(`auto-grab: ${fmtStay(toFire)}`)
+                                const r = warm
+                                    ? await warm.hot({
+                                        siteNo: toFire.siteNo,
+                                        startDate: toFire.startDate,
+                                        endDate: toFire.endDate,
+                                    })
+                                    : await tryGrabCampsite({
+                                        campgroundId: config.campgroundId,
+                                        campsiteId: toFire.campsiteId,
+                                        siteNo: toFire.siteNo,
+                                        startDate: toFire.startDate,
+                                        endDate: toFire.endDate,
+                                        dryRun: false,
+                                        accountIndex,
+                                        log,
+                                    })
                                 if (r.cartState === 'held') dashState.metrics.cartHolds += 1
                                 appendEvent(dashState, {
                                     type: 'cart_attempt',
-                                    siteNo: candidate.siteNo,
-                                    startDate: candidate.startDate,
-                                    endDate: candidate.endDate,
-                                    nights: candidate.nights,
+                                    siteNo: toFire.siteNo,
+                                    startDate: toFire.startDate,
+                                    endDate: toFire.endDate,
+                                    nights: toFire.nights,
                                     result: r.cartState ?? r.reason ?? 'unknown',
                                     observed: r.observed || null,
+                                    latencyMs: r.latencyMs?.total ?? null,
                                 })
                                 persistState()
                                 const status = r.cartState === 'held'
                                     ? '✅ **CART HOLD CONFIRMED** — go check out!'
                                     : r.cartState === 'wrong_trip'
-                                        ? `⚠️ **WRONG TRIP** — rec.gov gave us check-out ${r.observed?.checkOut} (wanted ${candidate.endDate}). Hold auto-released.`
+                                        ? `⚠️ **WRONG TRIP** — rec.gov gave us check-out ${r.observed?.checkOut} (wanted ${toFire.endDate}). Hold auto-released.`
                                         : `⚠️ auto-grab finished — cart state: ${r.cartState ?? r.reason ?? 'unknown'}`
                                 await discordPush([
                                     status,
-                                    `**Site ${candidate.siteNo}** — ${candidate.startDate} → ${candidate.endDate} (${candidate.nights}n)`,
+                                    `**Site ${toFire.siteNo}** — ${toFire.startDate} → ${toFire.endDate} (${toFire.nights}n)${toFire !== candidate ? ` _(shortened from ${candidate.nights}n)_` : ''}`,
                                     `**Cart:** https://www.recreation.gov/cart`,
-                                    `**Booking link:** ${bookingUrl(config.campgroundId, candidate)}`,
-                                ].join('\n'), r.cartShot || r.postClickShot)
-                                // Louder phone notification ONLY on a real hold — Discord pushes
-                                // lag 5-15s on mobile, ntfy delivers in ~1s. The 15-min cart
-                                // timer is short; the difference matters.
+                                    `**Booking link:** ${bookingUrl(config.campgroundId, toFire)}`,
+                                    r.latencyMs?.total ? `**Latency:** ${r.latencyMs.total}ms${warm ? ' (warm)' : ' (cold)'}` : null,
+                                ].filter(Boolean).join('\n'), r.cartShot || r.postClickShot)
                                 if (r.cartState === 'held') {
                                     await pushNtfy(
-                                        `HOLD: ${config.campgroundName} site ${candidate.siteNo}`,
-                                        `${candidate.startDate} → ${candidate.endDate} (${candidate.nights}n) — check out within 15 min!`,
+                                        `HOLD: ${config.campgroundName} site ${toFire.siteNo}`,
+                                        `${toFire.startDate} → ${toFire.endDate} (${toFire.nights}n) — check out within 15 min!`,
                                         {
                                             click: 'https://www.recreation.gov/cart',
                                             priority: 'max',
@@ -345,7 +414,9 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                         },
                                     )
                                 }
-                                if (r.ctx) {
+                                // Cold-launch path opens its own ctx that must be closed.
+                                // Warm path reuses the persistent ctx — DO NOT close it here.
+                                if (!warm && r.ctx) {
                                     await new Promise(rr => setTimeout(rr, 30_000))
                                     await r.ctx.close().catch(() => {})
                                 }
