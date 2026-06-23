@@ -429,7 +429,7 @@ async function cmdWatchAuto({
 
     const session = openSessionLog()
     const sessionStart = Date.now()
-    const HEARTBEAT_MS = 30 * 60 * 1000  // 30 min
+    const HEARTBEAT_MS = 6 * 60 * 60 * 1000  // 6 hr
     let pollCount = 0
     let consecutiveAllFail = 0
     let lastSnapshotSummary = '(none yet)'
@@ -506,7 +506,7 @@ async function cmdWatchAuto({
         `**Pre-warm:** ${preWarm ? 'on (acct1 HI party=7)' : 'off'}`,
         `**Mode:** ${simulate ? 'SIMULATE → Cottonwood Creek' : 'LYV LIVE'}`,
         `**Session log:** \`${session.filePath}\``,
-        `Heartbeat every 30 min until grab or shutdown.`,
+        `Heartbeat every ${Math.round(HEARTBEAT_MS / 60000 / 60)}h until grab or shutdown.`,
     ].join('\n'))
 
     // Pre-warm BOTH accounts in parallel — acct1 on Happy Isles party=7 (solo
