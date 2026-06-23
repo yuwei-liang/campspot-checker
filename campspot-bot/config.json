@@ -8,6 +8,6 @@
   "maxNights": 4,
   "minNights": 2,
   "minPeople": 6,
-  "pollIntervalMs": 60000,
+  "pollIntervalMs": 20000,
   "autoCart": false
 }

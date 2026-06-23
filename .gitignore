@@ -22,4 +22,5 @@ campspot-bot/.screenshots/
 campspot-bot/.traces/
 campspot-bot/logs/
 campspot-bot/.chromium-probe/
+campspot-bot/.captures/
 campspot-bot/state/

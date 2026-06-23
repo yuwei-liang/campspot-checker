@@ -21,6 +21,7 @@
 // for-real mode and returns a result object the CLI logs / Discords.
 import { chromium } from 'playwright'
 import path from 'node:path'
+import { writeFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { getAccount, handleLoginModalIfPresent } from '../permit-bot/CartBot.mjs'
 import { resolveForChromium } from '../permit-bot/dnsBypass.mjs'
@@ -354,7 +355,42 @@ export async function warmCampspotWindow({
     const page = await ctx.newPage()
     page.setDefaultTimeout(15000)
     const shotsDir = path.resolve('./campspot-bot/.screenshots')
+    const capturesDir = path.resolve('./campspot-bot/.captures')
     await mkdir(shotsDir, { recursive: true })
+    await mkdir(capturesDir, { recursive: true })
+
+    // Intel collection: every fire, the warm browser ends up POSTing the real
+    // booking request to /api/camps/reservations/campgrounds/<id>/multi (the
+    // shape was reverse-engineered out of the rec.gov bundle). We don't yet
+    // call the API directly because the request body's exact field names stay
+    // minified — so we capture the body + auth header off the wire here and
+    // dump it to campspot-bot/.captures/. Future PR: replay the captured POST
+    // in parallel with the UI clicks to shave the 3s click-latency off fires.
+    //
+    // Listener stays attached for the warm window's lifetime; one file per
+    // capture so multiple successful fires accumulate evidence.
+    const capturedRequests = []
+    page.on('request', (req) => {
+        const url = req.url()
+        if (!/\/reservations\/campgrounds\/\d+\/multi/i.test(url)) return
+        if (req.method() !== 'POST') return
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const file = path.join(capturesDir, `booking-post-${stamp}.json`)
+        const record = {
+            ts: new Date().toISOString(),
+            url,
+            method: req.method(),
+            headers: req.headers(),
+            postData: req.postData(),
+        }
+        capturedRequests.push(record)
+        try {
+            writeFileSync(file, JSON.stringify(record, null, 2))
+            log.info(`${tag} CAPTURED booking POST → ${file}`)
+        } catch (err) {
+            log.warn(`${tag} capture write failed: ${err.message}`)
+        }
+    })
 
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(3000)
