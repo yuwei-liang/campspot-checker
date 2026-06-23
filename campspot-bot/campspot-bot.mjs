@@ -244,14 +244,30 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                     log,
                                 })
                                 const status = r.cartState === 'held'
-                                    ? '✅ **CART HOLD CONFIRMED**'
-                                    : `⚠️ auto-grab finished — cart state: ${r.cartState ?? r.reason ?? 'unknown'}`
+                                    ? '✅ **CART HOLD CONFIRMED** — go check out!'
+                                    : r.cartState === 'wrong_trip'
+                                        ? `⚠️ **WRONG TRIP** — rec.gov gave us check-out ${r.observed?.checkOut} (wanted ${candidate.endDate}). Hold auto-released.`
+                                        : `⚠️ auto-grab finished — cart state: ${r.cartState ?? r.reason ?? 'unknown'}`
                                 await discordPush([
                                     status,
                                     `**Site ${candidate.siteNo}** — ${candidate.startDate} → ${candidate.endDate} (${candidate.nights}n)`,
                                     `**Cart:** https://www.recreation.gov/cart`,
                                     `**Booking link:** ${bookingUrl(config.campgroundId, candidate)}`,
                                 ].join('\n'), r.cartShot || r.postClickShot)
+                                // Louder phone notification ONLY on a real hold — Discord pushes
+                                // lag 5-15s on mobile, ntfy delivers in ~1s. The 15-min cart
+                                // timer is short; the difference matters.
+                                if (r.cartState === 'held') {
+                                    await pushNtfy(
+                                        `HOLD: ${config.campgroundName} site ${candidate.siteNo}`,
+                                        `${candidate.startDate} → ${candidate.endDate} (${candidate.nights}n) — check out within 15 min!`,
+                                        {
+                                            click: 'https://www.recreation.gov/cart',
+                                            priority: 'max',
+                                            tags: 'tent,white_check_mark,rotating_light',
+                                        },
+                                    )
+                                }
                                 if (r.ctx) {
                                     await new Promise(rr => setTimeout(rr, 30_000))
                                     await r.ctx.close().catch(() => {})
