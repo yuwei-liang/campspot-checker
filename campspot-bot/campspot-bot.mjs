@@ -11,6 +11,9 @@ import FormData from 'form-data'
 import CampspotChecker from './CampspotChecker.mjs'
 import { tryGrabCampsite, releaseCampspotCart } from './CampspotCartBot.mjs'
 import { httpsAgent } from '../permit-bot/dnsBypass.mjs'
+import { writeBotState, appendEvent } from '../dashboard/botState.mjs'
+
+const STATE_FILE = path.resolve('./campspot-bot/state/status.json')
 
 const log = {
     info: (msg) => console.log(`[${new Date().toISOString()}] ${msg}`),
@@ -180,6 +183,48 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
     let cartInFlight = false
     const recentlyAttempted = new Map() // key -> ts
 
+    // Dashboard state. Cumulative counters + a bounded ring buffer of recent
+    // events. Atomic-rename via writeBotState so the dashboard never observes
+    // a half-written JSON file.
+    const startedAtIso = new Date().toISOString()
+    const dashState = {
+        bot: 'campspot-bot',
+        pid: process.pid,
+        startedAt: startedAtIso,
+        lastHeartbeat: startedAtIso,
+        mode: autoGrab ? 'watch --auto-grab' : 'watch',
+        config: {
+            campgroundId: config.campgroundId,
+            campgroundName: config.campgroundName,
+            window: `${config.rangeStartDate} → ${config.rangeEndDate}`,
+            weekdays: config.targetWeekdays,
+            nights: `${config.minNights}-${config.maxNights}`,
+            minPeople: config.minPeople,
+            pollIntervalMs: config.pollIntervalMs,
+            autoGrab,
+        },
+        metrics: {
+            cycles: 0,
+            totalStaysSeen: 0,
+            newStaysDetected: 0,
+            cartAttempts: 0,
+            cartHolds: 0,
+            errors: 0,
+            backoffMs: 0,
+        },
+        lastSnapshot: null,
+        recentEvents: [],
+    }
+    const persistState = () => {
+        dashState.lastHeartbeat = new Date().toISOString()
+        dashState.metrics.backoffMs = checker.backoffMs
+        try { writeBotState(STATE_FILE, dashState) } catch (err) {
+            log.warn(`state write failed: ${err.message}`)
+        }
+    }
+    appendEvent(dashState, { type: 'startup', mode: dashState.mode })
+    persistState()
+
     // Startup ping.
     await discordPush([
         '🟢 **campspot-bot watch started**',
@@ -199,7 +244,27 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
             checker.resetBackoff()
             log.info(`cycle ${cycle}: ${snapshot.stays.length} stays (${newStays.length} new)`)
 
+            dashState.metrics.cycles = cycle
+            dashState.metrics.totalStaysSeen = snapshot.stays.length
+            dashState.metrics.newStaysDetected += newStays.length
+            dashState.lastSnapshot = {
+                fetchedAt: snapshot.fetchedAt,
+                campsiteCount: snapshot.campsiteCount,
+                stays: snapshot.stays.slice(0, 12), // cap so the state file doesn't bloat
+            }
+
             if (newStays.length > 0) {
+                for (const s of newStays.slice(0, 5)) {
+                    appendEvent(dashState, {
+                        type: 'new_stay',
+                        siteNo: s.siteNo,
+                        startDate: s.startDate,
+                        endDate: s.endDate,
+                        nights: s.nights,
+                        campsiteType: s.campsiteType,
+                        maxPeople: s.maxPeople,
+                    })
+                }
                 const header = `🏕️ **${newStays.length} new ${config.campgroundName} opening(s)**`
                 const body = newStays.slice(0, 10).map(s => {
                     const url = bookingUrl(config.campgroundId, s)
@@ -228,6 +293,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                     })
                     if (candidate) {
                         cartInFlight = true
+                        dashState.metrics.cartAttempts += 1
                         const key = `${candidate.campsiteId}|${candidate.startDate}|${candidate.endDate}`
                         recentlyAttempted.set(key, Date.now())
                         ;(async () => {
@@ -243,6 +309,17 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                     accountIndex,
                                     log,
                                 })
+                                if (r.cartState === 'held') dashState.metrics.cartHolds += 1
+                                appendEvent(dashState, {
+                                    type: 'cart_attempt',
+                                    siteNo: candidate.siteNo,
+                                    startDate: candidate.startDate,
+                                    endDate: candidate.endDate,
+                                    nights: candidate.nights,
+                                    result: r.cartState ?? r.reason ?? 'unknown',
+                                    observed: r.observed || null,
+                                })
+                                persistState()
                                 const status = r.cartState === 'held'
                                     ? '✅ **CART HOLD CONFIRMED** — go check out!'
                                     : r.cartState === 'wrong_trip'
@@ -274,6 +351,8 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                 }
                             } catch (err) {
                                 log.error(`auto-grab error: ${err.stack || err.message}`)
+                                appendEvent(dashState, { type: 'cart_attempt', result: 'error', error: err.message })
+                                persistState()
                                 await discordPush(`❌ auto-grab error: ${err.message}`)
                             } finally {
                                 cartInFlight = false
@@ -284,7 +363,10 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
             }
         } catch (err) {
             checker.handleError(err)
+            dashState.metrics.errors += 1
+            appendEvent(dashState, { type: 'poll_error', error: err.message, backoffMs: checker.backoffMs })
         }
+        persistState()
         const elapsed = Date.now() - t0
         const sleepMs = Math.max(0, config.pollIntervalMs - elapsed) + checker.backoffMs
         await new Promise(r => setTimeout(r, sleepMs))
