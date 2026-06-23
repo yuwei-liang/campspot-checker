@@ -347,7 +347,7 @@ async function launchContext({ headless = false, accountIndex = 1 } = {}) {
         // doesn't fire and reCAPTCHA v3 doesn't dock our score (06-22 fix).
         userAgent:
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-            '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            '(KHTML, like Gecko) Chrome/148.0.7778.96 Safari/537.36',
     })
 }
 
