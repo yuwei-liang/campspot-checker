@@ -1,5 +1,8 @@
 # campspot-checker
 
+[![test](https://github.com/yuwei-liang/campspot-checker/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/yuwei-liang/campspot-checker/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/yuwei-liang/campspot-checker/branch/main/graph/badge.svg)](https://codecov.io/gh/yuwei-liang/campspot-checker)
+
 Polls recreation.gov for campsite availability and pings a Discord channel when a site opens up for your target date.
 
 ## Setup
@@ -25,6 +28,8 @@ Edit `campgrounds.json`. Each entry is `{ "name": "...", "id": <recreation.gov i
 ```
 npm test
 ```
+
+GitHub Actions runs the same `npm test` on every push to `main` and every PR (`.github/workflows/test.yml`). The `test` check is a required status check on `main` — PRs can't merge until it's green.
 
 ## How it works
 
