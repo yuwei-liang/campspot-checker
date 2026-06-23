@@ -168,10 +168,127 @@ async function verifyCartHold(ctx, { siteNo, startDate, endDate, screenshotPath 
     return { state, cartText, cartShot, observed }
 }
 
+// Shared booking flow used by both `tryGrabCampsite` (cold launch path,
+// CLI / one-shot) and `warmCampspotWindow.hot` (warm path, watch loop).
+// Caller is responsible for opening the page at the campground URL with
+// startdate/enddate query params — this function picks up from there.
+//
+// Returns the same shape as the public entry points so they can pass it
+// straight through.
+async function performBookingFlow(ctx, page, {
+    campgroundId,
+    siteNo,
+    startDate,
+    endDate,
+    dryRun = false,
+    accountIndex = 1,
+    screenshotPath,
+    log = console,
+}) {
+    // Step 1: advance calendar to startDate.
+    log.info('Step 1: advance calendar grid to target date')
+    const advanced = await advanceCalendarTo(page, startDate, { log, maxAdvances: 60 })
+    if (!advanced) {
+        await page.screenshot({ path: screenshotPath('err-no-date'), fullPage: true }).catch(() => {})
+        return { ok: false, reason: 'date_not_in_grid', ctx, page }
+    }
+
+    // Step 2: find the available cell for site + start date.
+    log.info(`Step 2: find available cell for site ${siteNo}`)
+    const cell = await findAvailableCell(page, { siteNo, date: startDate })
+    if (!cell) {
+        log.warn(`No Available cell for site ${siteNo} on ${startDate} — slot likely just got taken`)
+        await page.screenshot({ path: screenshotPath('err-no-avail'), fullPage: true }).catch(() => {})
+        return { ok: false, reason: 'cell_not_available', ctx, page }
+    }
+    await cell.scrollIntoViewIfNeeded().catch(() => {})
+
+    if (dryRun) {
+        log.info('[dry-run] Cell located, NOT clicking.')
+        await page.screenshot({ path: screenshotPath('dryrun-located'), fullPage: true }).catch(() => {})
+        return { ok: true, dryRun: true, ctx, page }
+    }
+
+    // Step 3a: click the start cell — this picks the first night.
+    log.info('Step 3a: click start cell (first night)')
+    await cell.click()
+    await page.waitForTimeout(1200)
+
+    // Step 3b: for multi-night stays, ALSO click the last-night cell.
+    // (A single click on the start cell is interpreted as a 1-night stay
+    // regardless of URL `enddate`. To get N nights, click both endpoints —
+    // rec.gov range-selects the span between.)
+    const lastNight = lastNightOf(startDate, endDate)
+    if (lastNight && lastNight !== startDate) {
+        log.info(`Step 3b: click last-night cell (${lastNight}) for range select`)
+        await advanceCalendarTo(page, lastNight, { log, maxAdvances: 6 })
+        const endCell = await findAvailableCell(page, { siteNo, date: lastNight })
+        if (!endCell) {
+            log.warn(`No Available cell for last-night ${lastNight} on site ${siteNo} — slot likely partially taken`)
+            await page.screenshot({ path: screenshotPath('err-no-end-cell'), fullPage: true }).catch(() => {})
+            return { ok: false, reason: 'last_night_cell_missing', ctx, page }
+        }
+        await endCell.scrollIntoViewIfNeeded().catch(() => {})
+        await endCell.click()
+        await page.waitForTimeout(1200)
+    }
+    await page.screenshot({ path: screenshotPath('02-after-cell-click'), fullPage: true }).catch(() => {})
+
+    // Step 4: click "Add to Cart".
+    log.info('Step 4: click Add to Cart')
+    const addBtn = page.locator(
+        'button:has-text("Add to Cart"), #add-cart-campsite, button[aria-label*="Add to Cart" i]'
+    ).first()
+    await addBtn.waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForFunction(
+        () => {
+            const btns = [...document.querySelectorAll('button')]
+            const b = btns.find(x => /add to cart/i.test(x.textContent?.trim() || ''))
+            return b && !b.disabled && !/true/i.test(b.getAttribute('aria-disabled') || '')
+        },
+        null,
+        { timeout: 8000, polling: 200 },
+    ).catch(() => log.warn('Add to Cart did not become enabled; clicking anyway'))
+    await addBtn.click()
+    log.info('Clicked Add to Cart')
+    await page.waitForTimeout(3500)
+    await handleLoginModalIfPresent(page, { log, accountIndex })
+    await page.waitForTimeout(2500)
+    const postClickUrl = page.url()
+    const postClickShot = screenshotPath('03-after-add')
+    await page.screenshot({ path: postClickShot, fullPage: true }).catch(() => {})
+    log.info(`Post-Add URL: ${postClickUrl}`)
+
+    // Step 5: verify the hold by visiting /cart in a fresh tab.
+    log.info('Step 5: verify cart')
+    const { state: cartState, cartText, cartShot, observed } = await verifyCartHold(ctx, {
+        siteNo, startDate, endDate, screenshotPath,
+    })
+    log.info(`Cart state: ${cartState} (observed checkIn=${observed.checkIn}, checkOut=${observed.checkOut})`)
+
+    // Step 6: auto-release wrong_trip holds so they don't squat for 15 min.
+    if (cartState === 'wrong_trip') {
+        log.warn(`wrong_trip detected — releasing hold (wanted ${startDate}→${endDate}, got checkOut=${observed.checkOut})`)
+        try {
+            const r = await releaseCampspotCart({ accountIndex, log })
+            log.info(`released stale wrong_trip hold: removed=${r.removed} state=${r.state}`)
+        } catch (err) {
+            log.warn(`auto-release after wrong_trip failed: ${err.message}`)
+        }
+    }
+
+    return {
+        ok: true, ctx, page,
+        postClickUrl, postClickShot,
+        cartState, cartShot,
+        cartText: cartText.slice(0, 1500),
+        observed,
+    }
+}
+
 // Add a single (campsiteId, siteNo, startDate, endDate) stay to the cart.
-// `dryRun` stops just before clicking "Add to Cart" — useful for selector
-// validation against arbitrary dates without polluting the user's cart.
-// `endDate` is the checkout date (one day after the last night).
+// Cold-launch path — opens a fresh browser per call. Use from the CLI; the
+// watch loop should prefer warmCampspotWindow for sub-second fires.
 export async function tryGrabCampsite({
     campgroundId,
     campsiteId,         // numeric — used in screenshots / logs
@@ -199,124 +316,106 @@ export async function tryGrabCampsite({
         await page.goto(url, { waitUntil: 'domcontentloaded' })
         await page.waitForTimeout(3500)
         await handleLoginModalIfPresent(page, { log, accountIndex })
-        await page.screenshot({ path: screenshotPath('01-loaded'), fullPage: true })
-
-        // Step 1: advance calendar to startDate (the grid shows ~10 days, so a
-        // Sept date may need 12+ next-clicks from today).
-        log.info('Step 1: advance calendar grid to target date')
-        const advanced = await advanceCalendarTo(page, startDate, { log, maxAdvances: 60 })
-        if (!advanced) {
-            await page.screenshot({ path: screenshotPath('err-no-date'), fullPage: true })
-            return { ok: false, reason: 'date_not_in_grid', ctx, page }
-        }
-
-        // Step 2: find the available cell for site + start date.
-        log.info(`Step 2: find available cell for site ${siteNo}`)
-        const cell = await findAvailableCell(page, { siteNo, date: startDate })
-        if (!cell) {
-            log.warn(`No Available cell for site ${siteNo} on ${startDate} — slot likely just got taken`)
-            await page.screenshot({ path: screenshotPath('err-no-avail'), fullPage: true })
-            return { ok: false, reason: 'cell_not_available', ctx, page }
-        }
-        await cell.scrollIntoViewIfNeeded().catch(() => {})
-
-        if (dryRun) {
-            log.info('[dry-run] Cell located, NOT clicking.')
-            await page.screenshot({ path: screenshotPath('dryrun-located'), fullPage: true })
-            return { ok: true, dryRun: true, ctx, page }
-        }
-
-        // Step 3a: click the start cell — this picks the first night.
-        log.info('Step 3a: click start cell (first night)')
-        await cell.click()
-        await page.waitForTimeout(1200)
-
-        // Step 3b: for multi-night stays, ALSO click the last-night cell.
-        // (Verified 2026-06-22 by a real auto-grab gone wrong: a single click
-        // on the start cell is interpreted as a 1-night stay regardless of
-        // URL `enddate`. To get N nights, click both endpoints — rec.gov
-        // range-selects the span between.)
-        const lastNight = lastNightOf(startDate, endDate)
-        if (lastNight && lastNight !== startDate) {
-            log.info(`Step 3b: click last-night cell (${lastNight}) for range select`)
-            await advanceCalendarTo(page, lastNight, { log, maxAdvances: 6 })
-            const endCell = await findAvailableCell(page, { siteNo, date: lastNight })
-            if (!endCell) {
-                log.warn(`No Available cell for last-night ${lastNight} on site ${siteNo} — slot likely partially taken`)
-                await page.screenshot({ path: screenshotPath('err-no-end-cell'), fullPage: true })
-                return { ok: false, reason: 'last_night_cell_missing', ctx, page }
-            }
-            await endCell.scrollIntoViewIfNeeded().catch(() => {})
-            await endCell.click()
-            await page.waitForTimeout(1200)
-        }
-        await page.screenshot({ path: screenshotPath('02-after-cell-click'), fullPage: true })
-
-        // Step 4: click "Add to Cart". The button appears after the cell click
-        // and may briefly be disabled while the page settles.
-        log.info('Step 4: click Add to Cart')
-        const addBtn = page.locator(
-            'button:has-text("Add to Cart"), #add-cart-campsite, button[aria-label*="Add to Cart" i]'
-        ).first()
-        await addBtn.waitFor({ state: 'visible', timeout: 10000 })
-        await page.waitForFunction(
-            () => {
-                const btns = [...document.querySelectorAll('button')]
-                const b = btns.find(x => /add to cart/i.test(x.textContent?.trim() || ''))
-                return b && !b.disabled && !/true/i.test(b.getAttribute('aria-disabled') || '')
-            },
-            null,
-            { timeout: 8000, polling: 200 },
-        ).catch(() => log.warn('Add to Cart did not become enabled; clicking anyway'))
-        await addBtn.click()
-        log.info('Clicked Add to Cart')
-        await page.waitForTimeout(3500)
-        await handleLoginModalIfPresent(page, { log, accountIndex })
-        await page.waitForTimeout(2500)
-        const postClickUrl = page.url()
-        const postClickShot = screenshotPath('03-after-add')
-        await page.screenshot({ path: postClickShot, fullPage: true })
-        log.info(`Post-Add URL: ${postClickUrl}`)
-
-        // Step 5: verify the hold by visiting /cart in a fresh tab.
-        log.info('Step 5: verify cart')
-        const { state: cartState, cartText, cartShot, observed } = await verifyCartHold(ctx, {
-            siteNo,
-            startDate,
-            endDate,
-            screenshotPath,
+        await page.screenshot({ path: screenshotPath('01-loaded'), fullPage: true }).catch(() => {})
+        return await performBookingFlow(ctx, page, {
+            campgroundId, siteNo, startDate, endDate,
+            dryRun, accountIndex, screenshotPath, log,
         })
-        log.info(`Cart state: ${cartState} (observed checkIn=${observed.checkIn}, checkOut=${observed.checkOut})`)
-
-        // Step 6: if rec.gov gave us the wrong trip (e.g. 1 night instead of
-        // 4 because we only clicked the start cell), release the hold
-        // immediately so it doesn't squat on the account for 15 minutes for
-        // the wrong reservation.
-        if (cartState === 'wrong_trip') {
-            log.warn(`wrong_trip detected — releasing hold (wanted ${startDate}→${endDate}, got checkOut=${observed.checkOut})`)
-            try {
-                const r = await releaseCampspotCart({ accountIndex, log })
-                log.info(`released stale wrong_trip hold: removed=${r.removed} state=${r.state}`)
-            } catch (err) {
-                log.warn(`auto-release after wrong_trip failed: ${err.message}`)
-            }
-        }
-
-        return {
-            ok: true,
-            ctx,
-            page,
-            postClickUrl,
-            postClickShot,
-            cartState,
-            cartShot,
-            cartText: cartText.slice(0, 1500),
-            observed,
-        }
     } catch (err) {
         log.error(`tryGrabCampsite error: ${err.message}`)
         try { await page.screenshot({ path: screenshotPath('err'), fullPage: true }) } catch {}
         return { ok: false, reason: err.message, ctx, page }
+    }
+}
+
+// Warm window: pay the slow setup (browser launch, page load, login modal,
+// session-cookie warming) ONCE up front and return a `hot()` function that
+// reuses the same context for every fire. Saves ~6s per attempt vs cold
+// launch — for a 15-min cart hold window where races are decided in seconds,
+// this is the difference between getting the slot and watching it disappear.
+//
+// Caller must `close()` when done. `refresh()` reloads the campground page
+// to keep the session warm during long idle periods.
+//
+// Returns { ctx, page, hot(stay), refresh(), close(), accountIndex, email }.
+//   hot(stay) — stay = { siteNo, startDate, endDate, nights, ... }.
+//                Returns the same shape as tryGrabCampsite.
+export async function warmCampspotWindow({
+    campgroundId,
+    accountIndex = 1,
+    log = console,
+} = {}) {
+    const acct = getAccount(accountIndex)
+    const baseUrl = `https://www.recreation.gov/camping/campgrounds/${campgroundId}`
+    const tag = `[warm acct${accountIndex}]`
+    log.info(`${tag} launching warm window: ${acct.email} -> ${baseUrl}`)
+
+    const ctx = await launchCampspotContext({ headless: false, accountIndex })
+    const page = await ctx.newPage()
+    page.setDefaultTimeout(15000)
+    const shotsDir = path.resolve('./campspot-bot/.screenshots')
+    await mkdir(shotsDir, { recursive: true })
+
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(3000)
+    await handleLoginModalIfPresent(page, { log, accountIndex })
+    await page.waitForTimeout(1000)
+
+    // Confirm login state. If the header still shows "Sign Up / Log In" the
+    // saved profile cookie expired — caller should run permit-bot login. We
+    // don't bail (Add to Cart will trigger the modal handler), but we surface
+    // the warning so the user can address it before race time.
+    const hasLoginBtn = await page.evaluate(() => {
+        const els = [...document.querySelectorAll('button, a')]
+        return els.some(b => /sign up\s*\/\s*log in/i.test((b.textContent || '').trim()))
+    })
+    if (hasLoginBtn) {
+        log.warn(`${tag} session NOT logged in — Add to Cart will trigger the rec.gov modal. Run "node permit-bot/permit-bot.mjs login" to refresh.`)
+    } else {
+        log.info(`${tag} logged-in session confirmed; warm window idling`)
+    }
+
+    const hot = async ({ siteNo, startDate, endDate }) => {
+        const t0 = Date.now()
+        const screenshotPath = (label) =>
+            path.resolve(`${shotsDir}/${Date.now()}-cg${campgroundId}-site${siteNo}-warm-${label}.png`)
+        const url = `${baseUrl}?startdate=${startDate}&enddate=${endDate}`
+        log.info(`${tag} hot: ${siteNo} ${startDate}→${endDate}`)
+        // Navigate the existing page — much faster than a cold launch because
+        // cookies, DNS, and HTTP/2 connections all stay warm.
+        try {
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+        } catch (err) {
+            log.warn(`${tag} hot goto failed: ${err.message} — trying once more`)
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+        }
+        await page.waitForTimeout(1500)
+        await handleLoginModalIfPresent(page, { log, accountIndex })
+        const r = await performBookingFlow(ctx, page, {
+            campgroundId, siteNo, startDate, endDate,
+            dryRun: false, accountIndex, screenshotPath, log,
+        })
+        r.latencyMs = { total: Date.now() - t0 }
+        log.info(`${tag} hot done in ${r.latencyMs.total}ms (state=${r.cartState ?? r.reason})`)
+        return r
+    }
+
+    const refresh = async () => {
+        log.info(`${tag} refresh: reloading campground page to keep session warm`)
+        try {
+            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 })
+            await page.waitForTimeout(1500)
+            await handleLoginModalIfPresent(page, { log, accountIndex })
+        } catch (err) {
+            log.warn(`${tag} refresh failed: ${err.message}`)
+        }
+    }
+
+    return {
+        ctx, page, hot, refresh,
+        close: () => ctx.close().catch(() => {}),
+        accountIndex, email: acct.email,
+        loggedIn: !hasLoginBtn,
     }
 }
 

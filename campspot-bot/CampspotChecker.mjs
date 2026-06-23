@@ -152,6 +152,70 @@ export default class CampspotChecker {
         this.backoffMs = 0
         this.lastErrorReason = null
     }
+
+    // Pre-fire re-check: given a candidate stay, hit the API for just the
+    // month(s) the stay touches and confirm every night is still Available.
+    // If only a prefix is still Available (very common: someone snipes the
+    // tail), return the longest still-valid prefix instead of giving up.
+    //
+    // Returns { ok, originalStay, adjustedStay, reason }. When ok=true,
+    // adjustedStay is what should actually be cart-fired (may equal
+    // originalStay if everything still holds).
+    async recheckStay(stay) {
+        const months = monthRangesForRange(stay.startDate, stay.endDate)
+        let payload = {}
+        for (const ms of months) {
+            const url = `https://www.recreation.gov/api/camps/availability/campground/${this.campgroundId}/month?start_date=${encodeURIComponent(ms)}`
+            const res = await axios.get(url, {
+                headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
+                timeout: 8000,
+                httpsAgent,
+            })
+            const merged = res.data?.campsites?.[stay.campsiteId]
+            if (merged) {
+                payload = { ...payload, ...merged.availabilities }
+            }
+        }
+        // Walk nightDates left-to-right. Stop at the first night that flipped.
+        const stillValid = []
+        for (const d of stay.nightDates) {
+            const status = payload[`${d}T00:00:00Z`]
+            if (status === 'Available') stillValid.push(d)
+            else break
+        }
+        if (stillValid.length === stay.nightDates.length) {
+            return { ok: true, originalStay: stay, adjustedStay: stay, reason: 'unchanged' }
+        }
+        if (stillValid.length === 0) {
+            return { ok: false, originalStay: stay, adjustedStay: null, reason: 'all_gone' }
+        }
+        const lastNight = stillValid[stillValid.length - 1]
+        const sMs = Date.parse(`${lastNight}T00:00:00Z`)
+        const checkoutIso = new Date(sMs + 86400000).toISOString().slice(0, 10)
+        const adjusted = {
+            ...stay,
+            nightDates: stillValid,
+            nights: stillValid.length,
+            endDate: checkoutIso,
+        }
+        return { ok: true, originalStay: stay, adjustedStay: adjusted, reason: 'shortened' }
+    }
+}
+
+// Helper for recheckStay: month-starts covering a [startDate..endDate-1] range.
+// Kept module-local since it's only used by the recheck path.
+function monthRangesForRange(startDate, endDate) {
+    const [sy, sm] = startDate.slice(0, 7).split('-').map(Number)
+    const lastNightIso = new Date(Date.parse(`${endDate}T00:00:00Z`) - 86400000).toISOString().slice(0, 10)
+    const [ey, em] = lastNightIso.slice(0, 7).split('-').map(Number)
+    const out = []
+    let y = sy, m = sm
+    while (y < ey || (y === ey && m <= em)) {
+        out.push(new Date(Date.UTC(y, m - 1, 1)).toISOString())
+        m += 1
+        if (m > 12) { m = 1; y += 1 }
+    }
+    return out
 }
 
 export { monthStartsFor, addDays }
