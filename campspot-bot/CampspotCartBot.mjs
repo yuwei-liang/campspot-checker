@@ -185,6 +185,14 @@ async function performBookingFlow(ctx, page, {
     accountIndex = 1,
     screenshotPath,
     log = console,
+    // captureOnPartial: when the last-night cell disappears mid-flow we
+    // normally bail (correct, refuses to lock a wrong-trip). When this flag is
+    // true AND no booking-POST capture has been recorded yet, we go ahead and
+    // click Add to Cart on the start-cell-only selection so the network
+    // interceptor finally sees the real request. The wrong_trip detector then
+    // releases the resulting 1-night hold automatically. One capture is enough
+    // — caller is expected to flip the flag back off after a capture lands.
+    captureOnPartial = false,
 }) {
     // Step 1: advance calendar to startDate.
     log.info('Step 1: advance calendar grid to target date')
@@ -219,19 +227,30 @@ async function performBookingFlow(ctx, page, {
     // (A single click on the start cell is interpreted as a 1-night stay
     // regardless of URL `enddate`. To get N nights, click both endpoints —
     // rec.gov range-selects the span between.)
+    let partialCapture = false
     const lastNight = lastNightOf(startDate, endDate)
     if (lastNight && lastNight !== startDate) {
         log.info(`Step 3b: click last-night cell (${lastNight}) for range select`)
         await advanceCalendarTo(page, lastNight, { log, maxAdvances: 6 })
         const endCell = await findAvailableCell(page, { siteNo, date: lastNight })
         if (!endCell) {
-            log.warn(`No Available cell for last-night ${lastNight} on site ${siteNo} — slot likely partially taken`)
             await page.screenshot({ path: screenshotPath('err-no-end-cell'), fullPage: true }).catch(() => {})
-            return { ok: false, reason: 'last_night_cell_missing', ctx, page }
+            if (captureOnPartial) {
+                log.warn(`No Available cell for last-night ${lastNight} on site ${siteNo} — proceeding with 1-night capture (captureOnPartial=true)`)
+                partialCapture = true
+                // Skip the second click. The page already has the start cell
+                // selected; Add to Cart will queue a 1-night reservation,
+                // triggering the real booking POST that the network listener
+                // captures. The wrong_trip path then releases the hold.
+            } else {
+                log.warn(`No Available cell for last-night ${lastNight} on site ${siteNo} — slot likely partially taken`)
+                return { ok: false, reason: 'last_night_cell_missing', ctx, page }
+            }
+        } else {
+            await endCell.scrollIntoViewIfNeeded().catch(() => {})
+            await endCell.click()
+            await page.waitForTimeout(1200)
         }
-        await endCell.scrollIntoViewIfNeeded().catch(() => {})
-        await endCell.click()
-        await page.waitForTimeout(1200)
     }
     await page.screenshot({ path: screenshotPath('02-after-cell-click'), fullPage: true }).catch(() => {})
 
@@ -284,6 +303,7 @@ async function performBookingFlow(ctx, page, {
         cartState, cartShot,
         cartText: cartText.slice(0, 1500),
         observed,
+        partialCapture,
     }
 }
 
@@ -298,6 +318,7 @@ export async function tryGrabCampsite({
     endDate,            // YYYY-MM-DD (checkout)
     dryRun = true,
     accountIndex = 1,
+    captureOnPartial = false,
     log = console,
 } = {}) {
     const acct = getAccount(accountIndex)
@@ -320,7 +341,7 @@ export async function tryGrabCampsite({
         await page.screenshot({ path: screenshotPath('01-loaded'), fullPage: true }).catch(() => {})
         return await performBookingFlow(ctx, page, {
             campgroundId, siteNo, startDate, endDate,
-            dryRun, accountIndex, screenshotPath, log,
+            dryRun, accountIndex, screenshotPath, log, captureOnPartial,
         })
     } catch (err) {
         log.error(`tryGrabCampsite error: ${err.message}`)
@@ -411,12 +432,12 @@ export async function warmCampspotWindow({
         log.info(`${tag} logged-in session confirmed; warm window idling`)
     }
 
-    const hot = async ({ siteNo, startDate, endDate }) => {
+    const hot = async ({ siteNo, startDate, endDate, captureOnPartial = false }) => {
         const t0 = Date.now()
         const screenshotPath = (label) =>
             path.resolve(`${shotsDir}/${Date.now()}-cg${campgroundId}-site${siteNo}-warm-${label}.png`)
         const url = `${baseUrl}?startdate=${startDate}&enddate=${endDate}`
-        log.info(`${tag} hot: ${siteNo} ${startDate}→${endDate}`)
+        log.info(`${tag} hot: ${siteNo} ${startDate}→${endDate}${captureOnPartial ? ' (captureOnPartial=on)' : ''}`)
         // Navigate the existing page — much faster than a cold launch because
         // cookies, DNS, and HTTP/2 connections all stay warm.
         try {
@@ -429,7 +450,7 @@ export async function warmCampspotWindow({
         await handleLoginModalIfPresent(page, { log, accountIndex })
         const r = await performBookingFlow(ctx, page, {
             campgroundId, siteNo, startDate, endDate,
-            dryRun: false, accountIndex, screenshotPath, log,
+            dryRun: false, accountIndex, screenshotPath, log, captureOnPartial,
         })
         r.latencyMs = { total: Date.now() - t0 }
         log.info(`${tag} hot done in ${r.latencyMs.total}ms (state=${r.cartState ?? r.reason})`)

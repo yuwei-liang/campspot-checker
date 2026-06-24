@@ -2,7 +2,7 @@
 import * as dotenv from 'dotenv'
 dotenv.config()
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { createReadStream } from 'node:fs'
 import path from 'node:path'
 import axios from 'axios'
@@ -163,7 +163,19 @@ async function cmdRelease({ accountIndex = 1 } = {}) {
 // watch: poll continuously, notify on new openings. With --auto-grab, fires
 // CampspotCartBot on the highest-ranked new stay (sequentially — one cart at
 // a time so we don't trigger captchas).
-async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
+// Auto-disabling capture-on-partial helper: returns true when capture mode
+// should fire on a partial race. Goes false the moment any capture lands in
+// .captures/, so we don't squat the user with multiple 1-night phantom holds
+// after we already have the intel we need.
+const CAPTURES_DIR = path.resolve('./campspot-bot/.captures')
+function shouldCaptureOnPartial(captureFlagOn) {
+    if (!captureFlagOn) return false
+    if (!existsSync(CAPTURES_DIR)) return true
+    const files = readdirSync(CAPTURES_DIR).filter(f => /^booking-post-.+\.json$/.test(f))
+    return files.length === 0
+}
+
+async function cmdWatch({ autoGrab = false, accountIndex = 1, captureOnPartial = false } = {}) {
     const config = loadConfig()
     const checker = new CampspotChecker({
         campgroundId: config.campgroundId,
@@ -362,12 +374,15 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                 } catch (err) {
                                     log.warn(`recheck threw: ${err.message} — proceeding with original range`)
                                 }
+                                const fireCaptureOnPartial = shouldCaptureOnPartial(captureOnPartial)
+                                if (fireCaptureOnPartial) log.info(`captureOnPartial=on for this fire (no capture exists yet)`)
                                 log.info(`auto-grab: ${fmtStay(toFire)}`)
                                 const r = warm
                                     ? await warm.hot({
                                         siteNo: toFire.siteNo,
                                         startDate: toFire.startDate,
                                         endDate: toFire.endDate,
+                                        captureOnPartial: fireCaptureOnPartial,
                                     })
                                     : await tryGrabCampsite({
                                         campgroundId: config.campgroundId,
@@ -377,6 +392,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                         endDate: toFire.endDate,
                                         dryRun: false,
                                         accountIndex,
+                                        captureOnPartial: fireCaptureOnPartial,
                                         log,
                                     })
                                 if (r.cartState === 'held') dashState.metrics.cartHolds += 1
@@ -475,14 +491,22 @@ const kv = Object.fromEntries(
             case 'release-cart':
                 await cmdRelease({ accountIndex }); break
             case 'watch':
-                await cmdWatch({ autoGrab: flags.has('--auto-grab'), accountIndex }); break
+                await cmdWatch({
+                    autoGrab: flags.has('--auto-grab'),
+                    accountIndex,
+                    captureOnPartial: flags.has('--capture-on-partial'),
+                }); break
             default:
                 console.log(`Usage:
   node campspot-bot/campspot-bot.mjs check                                  # one-shot availability scan
   node campspot-bot/campspot-bot.mjs cart --site=068 --start=YYYY-MM-DD --end=YYYY-MM-DD [--for-real] [--account=N]
                                                                             # dry-run by default; --for-real adds to cart
   node campspot-bot/campspot-bot.mjs release-cart [--account=N]             # clear holds (test cleanup)
-  node campspot-bot/campspot-bot.mjs watch [--auto-grab] [--account=N]      # poll continuously, notify; --auto-grab fires the cart bot
+  node campspot-bot/campspot-bot.mjs watch [--auto-grab] [--capture-on-partial] [--account=N]
+                                                                            # --capture-on-partial: when last-night cell collapses mid-flow, proceed
+                                                                            #   with Add to Cart anyway to harvest the booking POST (auto-disables
+                                                                            #   after the first capture lands in .captures/). wrong_trip handler
+                                                                            #   releases the resulting 1-night phantom hold.
 
 Edit campspot-bot/config.json for campgroundId / weekday filter / window.
 Re-uses the permit-bot rec.gov session — run \`node permit-bot/permit-bot.mjs login\` first.
