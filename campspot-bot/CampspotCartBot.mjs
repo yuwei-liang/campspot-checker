@@ -351,107 +351,164 @@ export async function warmCampspotWindow({
     const tag = `[warm acct${accountIndex}]`
     log.info(`${tag} launching warm window: ${acct.email} -> ${baseUrl}`)
 
-    const ctx = await launchCampspotContext({ headless: false, accountIndex })
-    const page = await ctx.newPage()
-    page.setDefaultTimeout(15000)
     const shotsDir = path.resolve('./campspot-bot/.screenshots')
     const capturesDir = path.resolve('./campspot-bot/.captures')
     await mkdir(shotsDir, { recursive: true })
     await mkdir(capturesDir, { recursive: true })
 
-    // Intel collection: every fire, the warm browser ends up POSTing the real
-    // booking request to /api/camps/reservations/campgrounds/<id>/multi (the
-    // shape was reverse-engineered out of the rec.gov bundle). We don't yet
-    // call the API directly because the request body's exact field names stay
-    // minified — so we capture the body + auth header off the wire here and
-    // dump it to campspot-bot/.captures/. Future PR: replay the captured POST
-    // in parallel with the UI clicks to shave the 3s click-latency off fires.
-    //
-    // Listener stays attached for the warm window's lifetime; one file per
-    // capture so multiple successful fires accumulate evidence.
-    const capturedRequests = []
-    page.on('request', (req) => {
-        const url = req.url()
-        if (!/\/reservations\/campgrounds\/\d+\/multi/i.test(url)) return
-        if (req.method() !== 'POST') return
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-        const file = path.join(capturesDir, `booking-post-${stamp}.json`)
-        const record = {
-            ts: new Date().toISOString(),
-            url,
-            method: req.method(),
-            headers: req.headers(),
-            postData: req.postData(),
-        }
-        capturedRequests.push(record)
-        try {
-            writeFileSync(file, JSON.stringify(record, null, 2))
-            log.info(`${tag} CAPTURED booking POST → ${file}`)
-        } catch (err) {
-            log.warn(`${tag} capture write failed: ${err.message}`)
-        }
-    })
+    // Mutable handles — refresh+hot replace these when the chromium context
+    // dies (network drop, OOM, rec.gov pushes the tab away, etc.) so a single
+    // crash doesn't blind the bot for hours. We saw this 2026-06-24: the
+    // context died ~36min after startup; the bot kept polling but every
+    // subsequent fire threw "Target page, context or browser has been closed"
+    // and we lost two real openings.
+    let ctx = null
+    let page = null
+    let loggedIn = false
 
-    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(3000)
-    await handleLoginModalIfPresent(page, { log, accountIndex })
-    await page.waitForTimeout(1000)
-
-    // Confirm login state. If the header still shows "Sign Up / Log In" the
-    // saved profile cookie expired — caller should run permit-bot login. We
-    // don't bail (Add to Cart will trigger the modal handler), but we surface
-    // the warning so the user can address it before race time.
-    const hasLoginBtn = await page.evaluate(() => {
-        const els = [...document.querySelectorAll('button, a')]
-        return els.some(b => /sign up\s*\/\s*log in/i.test((b.textContent || '').trim()))
-    })
-    if (hasLoginBtn) {
-        log.warn(`${tag} session NOT logged in — Add to Cart will trigger the rec.gov modal. Run "node permit-bot/permit-bot.mjs login" to refresh.`)
-    } else {
-        log.info(`${tag} logged-in session confirmed; warm window idling`)
+    const attachCaptureListener = (p) => {
+        // One listener per page lifetime. Records every booking POST to disk
+        // so the follow-up direct-API PR can replay it verbatim.
+        p.on('request', (req) => {
+            const url = req.url()
+            if (!/\/reservations\/campgrounds\/\d+\/multi/i.test(url)) return
+            if (req.method() !== 'POST') return
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+            const file = path.join(capturesDir, `booking-post-${stamp}.json`)
+            const record = {
+                ts: new Date().toISOString(),
+                url,
+                method: req.method(),
+                headers: req.headers(),
+                postData: req.postData(),
+            }
+            try {
+                writeFileSync(file, JSON.stringify(record, null, 2))
+                log.info(`${tag} CAPTURED booking POST → ${file}`)
+            } catch (err) {
+                log.warn(`${tag} capture write failed: ${err.message}`)
+            }
+        })
     }
 
-    const hot = async ({ siteNo, startDate, endDate }) => {
-        const t0 = Date.now()
-        const screenshotPath = (label) =>
-            path.resolve(`${shotsDir}/${Date.now()}-cg${campgroundId}-site${siteNo}-warm-${label}.png`)
-        const url = `${baseUrl}?startdate=${startDate}&enddate=${endDate}`
-        log.info(`${tag} hot: ${siteNo} ${startDate}→${endDate}`)
-        // Navigate the existing page — much faster than a cold launch because
-        // cookies, DNS, and HTTP/2 connections all stay warm.
-        try {
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
-        } catch (err) {
-            log.warn(`${tag} hot goto failed: ${err.message} — trying once more`)
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    const openWarm = async ({ silent = false } = {}) => {
+        if (ctx) {
+            try { await ctx.close() } catch { /* already dead */ }
         }
-        await page.waitForTimeout(1500)
+        ctx = await launchCampspotContext({ headless: false, accountIndex })
+        page = await ctx.newPage()
+        page.setDefaultTimeout(15000)
+        attachCaptureListener(page)
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
+        await page.waitForTimeout(3000)
         await handleLoginModalIfPresent(page, { log, accountIndex })
-        const r = await performBookingFlow(ctx, page, {
-            campgroundId, siteNo, startDate, endDate,
-            dryRun: false, accountIndex, screenshotPath, log,
+        await page.waitForTimeout(1000)
+        const hasLoginBtn = await page.evaluate(() => {
+            const els = [...document.querySelectorAll('button, a')]
+            return els.some(b => /sign up\s*\/\s*log in/i.test((b.textContent || '').trim()))
         })
-        r.latencyMs = { total: Date.now() - t0 }
-        log.info(`${tag} hot done in ${r.latencyMs.total}ms (state=${r.cartState ?? r.reason})`)
-        return r
+        loggedIn = !hasLoginBtn
+        if (!silent) {
+            if (hasLoginBtn) {
+                log.warn(`${tag} session NOT logged in — Add to Cart will trigger the rec.gov modal. Run "node permit-bot/permit-bot.mjs login" to refresh.`)
+            } else {
+                log.info(`${tag} logged-in session confirmed; warm window idling`)
+            }
+        }
+    }
+    await openWarm()
+
+    // True if the context or page is unusable for the next fire.
+    const isDead = () => !page || page.isClosed() || !ctx?.browser?.()
+
+    // Recognise closed-context error shapes thrown by Playwright across goto /
+    // click / evaluate. We retry once after re-opening the warm window.
+    const isClosedContextError = (err) =>
+        /closed|disconnected|crashed|browser has been closed/i.test(err?.message || '')
+
+    const hot = async ({ siteNo, startDate, endDate }) => {
+        // Pre-flight: if the previous fire (or the 11-hour idle gap from
+        // 2026-06-24) killed the context, recreate it BEFORE we burn time
+        // navigating to a dead tab.
+        if (isDead()) {
+            log.warn(`${tag} warm context is dead — re-opening before hot fire`)
+            try { await openWarm({ silent: true }) } catch (err) {
+                log.warn(`${tag} re-open failed: ${err.message}`)
+                return { ok: false, reason: `warm_reopen_failed: ${err.message}` }
+            }
+        }
+
+        const doHot = async () => {
+            const t0 = Date.now()
+            const screenshotPath = (label) =>
+                path.resolve(`${shotsDir}/${Date.now()}-cg${campgroundId}-site${siteNo}-warm-${label}.png`)
+            const url = `${baseUrl}?startdate=${startDate}&enddate=${endDate}`
+            log.info(`${tag} hot: ${siteNo} ${startDate}→${endDate}`)
+            try {
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+            } catch (err) {
+                log.warn(`${tag} hot goto failed: ${err.message} — trying once more`)
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+            }
+            await page.waitForTimeout(1500)
+            await handleLoginModalIfPresent(page, { log, accountIndex })
+            const r = await performBookingFlow(ctx, page, {
+                campgroundId, siteNo, startDate, endDate,
+                dryRun: false, accountIndex, screenshotPath, log,
+            })
+            r.latencyMs = { total: Date.now() - t0 }
+            log.info(`${tag} hot done in ${r.latencyMs.total}ms (state=${r.cartState ?? r.reason})`)
+            return r
+        }
+
+        try {
+            return await doHot()
+        } catch (err) {
+            if (!isClosedContextError(err)) throw err
+            log.warn(`${tag} hot threw closed-context error mid-flow; re-opening warm + retrying once`)
+            try { await openWarm({ silent: true }) } catch (reopenErr) {
+                log.warn(`${tag} re-open failed: ${reopenErr.message}`)
+                return { ok: false, reason: `warm_reopen_failed: ${reopenErr.message}` }
+            }
+            try {
+                return await doHot()
+            } catch (retryErr) {
+                log.warn(`${tag} hot retry after re-open also failed: ${retryErr.message}`)
+                return { ok: false, reason: `warm_retry_failed: ${retryErr.message}` }
+            }
+        }
     }
 
     const refresh = async () => {
         log.info(`${tag} refresh: reloading campground page to keep session warm`)
+        if (isDead()) {
+            log.warn(`${tag} refresh found dead context — re-opening warm window`)
+            try { await openWarm({ silent: true }) } catch (err) {
+                log.warn(`${tag} refresh re-open failed: ${err.message}`)
+            }
+            return
+        }
         try {
             await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 })
             await page.waitForTimeout(1500)
             await handleLoginModalIfPresent(page, { log, accountIndex })
         } catch (err) {
-            log.warn(`${tag} refresh failed: ${err.message}`)
+            log.warn(`${tag} refresh failed: ${err.message} — re-opening warm`)
+            try { await openWarm({ silent: true }) } catch (reErr) {
+                log.warn(`${tag} refresh re-open failed: ${reErr.message}`)
+            }
         }
     }
 
     return {
-        ctx, page, hot, refresh,
-        close: () => ctx.close().catch(() => {}),
+        // Caller may keep a reference but should NOT cache page/ctx — they
+        // get swapped on re-open.
+        get ctx() { return ctx },
+        get page() { return page },
+        hot, refresh,
+        close: () => ctx?.close?.().catch(() => {}),
         accountIndex, email: acct.email,
-        loggedIn: !hasLoginBtn,
+        get loggedIn() { return loggedIn },
     }
 }
 
