@@ -104,9 +104,10 @@ async function cmdCheck() {
         maxNights: config.maxNights,
         minNights: config.minNights,
         minPeople: config.minPeople,
+        leadDays: config.leadDays,
         log,
     })
-    log.info(`check: cg=${config.campgroundId} window=${config.rangeStartDate}..${config.rangeEndDate} weekdays=${config.targetWeekdays.join(',')} nights=${config.minNights}-${config.maxNights} minPeople=${config.minPeople}`)
+    log.info(`check: cg=${config.campgroundId} window=${checker.effectiveStartDate()}..${config.rangeEndDate} (leadDays=${config.leadDays || 0}) weekdays=${config.targetWeekdays.join(',')} nights=${config.minNights}-${config.maxNights} minPeople=${config.minPeople}`)
     const payload = await checker.pollOnce()
     const { snapshot } = checker.diff(payload)
     log.info(`Scanned ${snapshot.campsiteCount} campsites, found ${snapshot.stays.length} qualifying stays.`)
@@ -173,9 +174,10 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
         maxNights: config.maxNights,
         minNights: config.minNights,
         minPeople: config.minPeople,
+        leadDays: config.leadDays,
         log,
     })
-    log.info(`watch: cg=${config.campgroundId} window=${config.rangeStartDate}..${config.rangeEndDate} ` +
+    log.info(`watch: cg=${config.campgroundId} window=${checker.effectiveStartDate()}..${config.rangeEndDate} (leadDays=${config.leadDays || 0}) ` +
         `weekdays=${config.targetWeekdays.join(',')} nights=${config.minNights}-${config.maxNights} ` +
         `minPeople=${config.minPeople} poll=${config.pollIntervalMs}ms autoGrab=${autoGrab}`)
 
