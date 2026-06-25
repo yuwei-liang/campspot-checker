@@ -146,9 +146,14 @@ async function verifyCartHold(ctx, { siteNo, startDate, endDate, screenshotPath 
         cartText = await cartPage.evaluate(() => document.body.innerText)
 
         // Pull the literal check-in / check-out lines so we can report what we
-        // actually got, not just true/false. Pattern: "Check-In Date: Thu Jun 25, 2026".
-        const ciMatch = cartText.match(/Check-In Date:\s*\w+\s+(\w+)\s+(\d+),\s+(\d{4})/i)
-        const coMatch = cartText.match(/Check-Out Date:\s*\w+\s+(\w+)\s+(\d+),\s+(\d{4})/i)
+        // actually got, not just true/false. rec.gov uses TWO different labels
+        // depending on the view: "Check-In Date: Thu Jun 25, 2026" (full) and
+        // "Check-In: Thu Jul 23, 2026" (compact). The 2026-06-25 cascade lost
+        // a real hold because the regex only matched the full form and the
+        // compact-form cart fell through to `has_items_but_not_target` (no
+        // auto-release, no Discord/ntfy alert, hold expired silently).
+        const ciMatch = cartText.match(/Check-?\s*In(?:\s+Date)?:\s*\w+\s+(\w+)\s+(\d+),\s+(\d{4})/i)
+        const coMatch = cartText.match(/Check-?\s*Out(?:\s+Date)?:\s*\w+\s+(\w+)\s+(\d+),\s+(\d{4})/i)
         if (ciMatch) observed.checkIn = `${ciMatch[1]} ${ciMatch[2]}, ${ciMatch[3]}`
         if (coMatch) observed.checkOut = `${coMatch[1]} ${coMatch[2]}, ${coMatch[3]}`
 
@@ -176,6 +181,27 @@ async function verifyCartHold(ctx, { siteNo, startDate, endDate, screenshotPath 
 //
 // Returns the same shape as the public entry points so they can pass it
 // straight through.
+// Count actual nights in a `wrong_trip` observation (e.g. "Thu Jul 23, 2026"
+// → "Sat Jul 25, 2026" = 2 nights). Returns null if either side fails to
+// parse. Used to decide whether a partial hold is still worth keeping
+// (≥ minNights) or should be auto-released.
+function observedNights(checkInStr, checkOutStr) {
+    if (!checkInStr || !checkOutStr) return null
+    const monthLookup = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 }
+    const parse = (s) => {
+        // "Jul 23, 2026"
+        const m = s.match(/^(\w+)\s+(\d+),\s+(\d{4})$/)
+        if (!m) return null
+        const month = monthLookup[m[1].slice(0, 3)]
+        if (month == null) return null
+        return Date.UTC(Number(m[3]), month, Number(m[2]))
+    }
+    const ci = parse(checkInStr)
+    const co = parse(checkOutStr)
+    if (ci == null || co == null) return null
+    return Math.round((co - ci) / 86400000)
+}
+
 async function performBookingFlow(ctx, page, {
     campgroundId,
     siteNo,
@@ -183,6 +209,10 @@ async function performBookingFlow(ctx, page, {
     endDate,
     dryRun = false,
     accountIndex = 1,
+    // minNights: when a wrong_trip lands a partial hold, only auto-release if
+    // the observed range is BELOW this threshold. A 4-night request that
+    // landed a 2-night hold is still worth keeping if minNights=2.
+    minNights = 1,
     screenshotPath,
     log = console,
 }) {
@@ -267,14 +297,24 @@ async function performBookingFlow(ctx, page, {
     })
     log.info(`Cart state: ${cartState} (observed checkIn=${observed.checkIn}, checkOut=${observed.checkOut})`)
 
-    // Step 6: auto-release wrong_trip holds so they don't squat for 15 min.
+    // Step 6: wrong_trip handling. Auto-release ONLY if the partial hold is
+    // below minNights — anything ≥ minNights is still worth keeping and
+    // letting the user decide. Tonight's Site 100 cascade lost a perfectly
+    // good 2-night hold because we auto-released by default.
+    const partialNights = cartState === 'wrong_trip' ? observedNights(observed.checkIn, observed.checkOut) : null
+    let autoReleased = false
     if (cartState === 'wrong_trip') {
-        log.warn(`wrong_trip detected — releasing hold (wanted ${startDate}→${endDate}, got checkOut=${observed.checkOut})`)
-        try {
-            const r = await releaseCampspotCart({ accountIndex, log })
-            log.info(`released stale wrong_trip hold: removed=${r.removed} state=${r.state}`)
-        } catch (err) {
-            log.warn(`auto-release after wrong_trip failed: ${err.message}`)
+        if (partialNights != null && partialNights >= minNights) {
+            log.warn(`wrong_trip but observed ${partialNights}n ≥ minNights=${minNights} — KEEPING hold for user to decide`)
+        } else {
+            log.warn(`wrong_trip with observed=${partialNights}n < minNights=${minNights} — releasing (wanted ${startDate}→${endDate}, got ${observed.checkIn}→${observed.checkOut})`)
+            try {
+                const r = await releaseCampspotCart({ accountIndex, log })
+                log.info(`released stale wrong_trip hold: removed=${r.removed} state=${r.state}`)
+                autoReleased = true
+            } catch (err) {
+                log.warn(`auto-release after wrong_trip failed: ${err.message}`)
+            }
         }
     }
 
@@ -284,6 +324,8 @@ async function performBookingFlow(ctx, page, {
         cartState, cartShot,
         cartText: cartText.slice(0, 1500),
         observed,
+        partialNights,
+        autoReleased,
     }
 }
 
@@ -298,6 +340,7 @@ export async function tryGrabCampsite({
     endDate,            // YYYY-MM-DD (checkout)
     dryRun = true,
     accountIndex = 1,
+    minNights = 1,
     log = console,
 } = {}) {
     const acct = getAccount(accountIndex)
@@ -320,7 +363,7 @@ export async function tryGrabCampsite({
         await page.screenshot({ path: screenshotPath('01-loaded'), fullPage: true }).catch(() => {})
         return await performBookingFlow(ctx, page, {
             campgroundId, siteNo, startDate, endDate,
-            dryRun, accountIndex, screenshotPath, log,
+            dryRun, accountIndex, minNights, screenshotPath, log,
         })
     } catch (err) {
         log.error(`tryGrabCampsite error: ${err.message}`)
@@ -426,7 +469,7 @@ export async function warmCampspotWindow({
     const isClosedContextError = (err) =>
         /closed|disconnected|crashed|browser has been closed/i.test(err?.message || '')
 
-    const hot = async ({ siteNo, startDate, endDate }) => {
+    const hot = async ({ siteNo, startDate, endDate, minNights = 1 }) => {
         // Pre-flight: if the previous fire (or the 11-hour idle gap from
         // 2026-06-24) killed the context, recreate it BEFORE we burn time
         // navigating to a dead tab.
@@ -454,7 +497,7 @@ export async function warmCampspotWindow({
             await handleLoginModalIfPresent(page, { log, accountIndex })
             const r = await performBookingFlow(ctx, page, {
                 campgroundId, siteNo, startDate, endDate,
-                dryRun: false, accountIndex, screenshotPath, log,
+                dryRun: false, accountIndex, minNights, screenshotPath, log,
             })
             r.latencyMs = { total: Date.now() - t0 }
             log.info(`${tag} hot done in ${r.latencyMs.total}ms (state=${r.cartState ?? r.reason})`)

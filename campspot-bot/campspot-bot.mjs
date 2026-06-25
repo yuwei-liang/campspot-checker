@@ -368,6 +368,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                         siteNo: toFire.siteNo,
                                         startDate: toFire.startDate,
                                         endDate: toFire.endDate,
+                                        minNights: config.minNights,
                                     })
                                     : await tryGrabCampsite({
                                         campgroundId: config.campgroundId,
@@ -377,6 +378,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                         endDate: toFire.endDate,
                                         dryRun: false,
                                         accountIndex,
+                                        minNights: config.minNights,
                                         log,
                                     })
                                 if (r.cartState === 'held') dashState.metrics.cartHolds += 1
@@ -394,7 +396,9 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                 const status = r.cartState === 'held'
                                     ? '✅ **CART HOLD CONFIRMED** — go check out!'
                                     : r.cartState === 'wrong_trip'
-                                        ? `⚠️ **WRONG TRIP** — rec.gov gave us check-out ${r.observed?.checkOut} (wanted ${toFire.endDate}). Hold auto-released.`
+                                        ? (r.autoReleased
+                                            ? `⚠️ **WRONG TRIP** — rec.gov gave us ${r.observed?.checkIn ?? '?'} → ${r.observed?.checkOut ?? '?'} (wanted ${toFire.startDate}→${toFire.endDate}, ${r.partialNights ?? '?'}n < minNights). Auto-released.`
+                                            : `🟡 **PARTIAL HOLD** — ${r.partialNights ?? '?'}n hold (${r.observed?.checkIn ?? '?'} → ${r.observed?.checkOut ?? '?'}), wanted ${toFire.nights}n. Decide before 15-min timer expires.`)
                                         : `⚠️ auto-grab finished — cart state: ${r.cartState ?? r.reason ?? 'unknown'}`
                                 await discordPush([
                                     status,
@@ -411,6 +415,18 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                             click: 'https://www.recreation.gov/cart',
                                             priority: 'max',
                                             tags: 'tent,white_check_mark,rotating_light',
+                                        },
+                                    )
+                                } else if (r.cartState === 'wrong_trip' && !r.autoReleased) {
+                                    // Partial hold that we KEPT because it meets minNights —
+                                    // user should check it. ntfy with same urgency as held.
+                                    await pushNtfy(
+                                        `PARTIAL: ${config.campgroundName} site ${toFire.siteNo}`,
+                                        `Got ${r.partialNights ?? '?'}n (${r.observed?.checkIn ?? '?'} → ${r.observed?.checkOut ?? '?'}) — wanted ${toFire.nights}n. Check cart NOW, 15-min timer running.`,
+                                        {
+                                            click: 'https://www.recreation.gov/cart',
+                                            priority: 'max',
+                                            tags: 'tent,warning,rotating_light',
                                         },
                                     )
                                 }
