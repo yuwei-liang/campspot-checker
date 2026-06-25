@@ -143,6 +143,19 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
   function escape(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);
   }
+  // Bot writes all timestamps in UTC (ISO Z); user thinks in Pacific Time.
+  // Format wall-clock times in America/Los_Angeles so the dashboard always
+  // matches what the user sees on their wall and on rec.gov reservation pages
+  // (which are PT-presented anyway).
+  const PT_TIME_FMT = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  function ptTime(iso) {
+    if (!iso) return '--';
+    try { return PT_TIME_FMT.format(new Date(iso)) + ' PT'; }
+    catch { return '--'; }
+  }
   function ago(iso) {
     if (!iso) return '—';
     const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
@@ -194,7 +207,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
               : e.type === 'shutdown'
                 ? 'polls=' + escape(e.pollCount ?? '—') + ' uptimeMs=' + escape(e.uptimeMs ?? '—')
                 : escape(JSON.stringify(e).slice(0, 140));
-      const t = (e.ts || '').slice(11, 19);
+      const t = ptTime(e.ts);
       return '<div class="ev"><div class="t">' + escape(t) + '</div><div class="type ' + escape(e.type) + '">' + escape(e.type) + '</div><div class="body">' + body + '</div></div>';
     }).join('') + '</div>';
   }
@@ -267,7 +280,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
   }
 
   function render(data) {
-    clock.textContent = data.serverTime?.slice(11, 19) ?? '--';
+    clock.textContent = ptTime(data.serverTime);
     grid.innerHTML = data.bots.map(b => {
       const inner = b.bot === 'campspot-bot' ? renderCampspotCard(b)
         : b.bot === 'permit-bot' ? renderPermitBotCard(b)
