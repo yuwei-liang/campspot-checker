@@ -15,6 +15,7 @@ import { decide } from './decision.mjs'
 import { httpsAgent } from './dnsBypass.mjs'
 import { benchmarkPolling } from './benchmark.mjs'
 import { runChartCommand, latestSessionLogPath } from './chart.mjs'
+import { resetBackoffWithRecovery } from '../dashboard/botState.mjs'
 
 const log = {
     info: (msg) => console.log(`[${new Date().toISOString()}] ${msg}`),
@@ -801,7 +802,8 @@ async function cmdWatchAuto({
         try {
             const payload = await checker.pollOnce()
             const { snapshot } = checker.diff(payload)
-            checker.resetBackoff()
+            resetBackoffWithRecovery(checker, ({ priorBackoffMs }) =>
+                session.write('poll_recovered', { priorBackoffMs }))
             pollCount += 1
 
             // Build {date -> {hi, gp}} from snapshot rows.

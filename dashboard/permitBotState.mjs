@@ -58,9 +58,10 @@ export function readPermitBotState() {
     const errors = events.filter(e => e.event === 'poll_error').length
     // High-signal events only — prewarm + warm_dom_inventory fire once at
     // startup and dwarf everything else. Keep verify_config / warm_row_check
-    // because they surface drift.
+    // because they surface drift. poll_error + poll_recovered are paired so
+    // the dashboard shows both the hit and the comeback.
     const recentEvents = events
-        .filter(e => /^(decision|decision_skipped|fire_results|warm_row_check_failed|verify_config|heartbeat|shutdown)$/.test(e.event))
+        .filter(e => /^(decision|decision_skipped|fire_results|warm_row_check_failed|verify_config|heartbeat|shutdown|poll_error|poll_recovered)$/.test(e.event))
         .slice(-30)
         .reverse()
         .map(e => ({ type: e.event, ts: e.ts, ...e }))
