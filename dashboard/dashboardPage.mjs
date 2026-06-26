@@ -93,7 +93,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
 
   .events { display: flex; flex-direction: column; gap: 3px; max-height: 240px; overflow: auto; }
   .ev {
-    display: grid; grid-template-columns: 64px 96px 1fr;
+    display: grid; grid-template-columns: 112px 96px 1fr;
     gap: 8px; font-size: 12px;
     padding: 4px 0; border-bottom: 1px dashed var(--line);
   }
@@ -142,6 +142,33 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
 
   function escape(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);
+  }
+  // Bot writes timestamps in UTC. User reads them against a wall clock in PT
+  // and on rec.gov pages (PT). Render all event timestamps in
+  // America/Los_Angeles so the dashboard matches what the user sees.
+  // ptTime is for the header clock (date is implicit: "now"). ptFull is for
+  // event rows where the date matters — events span midnight PT so two rows
+  // could read "23:30" and "00:05" with no way to tell they're a day apart.
+  const PT_TIME_FMT = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const PT_FULL_FMT = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', hour12: false,
+    month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  function ptTime(iso) {
+    if (!iso) return '--';
+    try { return PT_TIME_FMT.format(new Date(iso)) + ' PT'; }
+    catch { return '--'; }
+  }
+  function ptFull(iso) {
+    if (!iso) return '--';
+    try {
+      // en-US returns "06/25, 21:24:07"; strip the comma so it's compact.
+      return PT_FULL_FMT.format(new Date(iso)).replace(',', '');
+    } catch { return '--'; }
   }
   function ago(iso) {
     if (!iso) return '—';
@@ -194,7 +221,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
               : e.type === 'shutdown'
                 ? 'polls=' + escape(e.pollCount ?? '—') + ' uptimeMs=' + escape(e.uptimeMs ?? '—')
                 : escape(JSON.stringify(e).slice(0, 140));
-      const t = (e.ts || '').slice(11, 19);
+      const t = ptFull(e.ts);
       return '<div class="ev"><div class="t">' + escape(t) + '</div><div class="type ' + escape(e.type) + '">' + escape(e.type) + '</div><div class="body">' + body + '</div></div>';
     }).join('') + '</div>';
   }
@@ -267,7 +294,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
   }
 
   function render(data) {
-    clock.textContent = data.serverTime?.slice(11, 19) ?? '--';
+    clock.textContent = ptTime(data.serverTime);
     grid.innerHTML = data.bots.map(b => {
       const inner = b.bot === 'campspot-bot' ? renderCampspotCard(b)
         : b.bot === 'permit-bot' ? renderPermitBotCard(b)
