@@ -10,6 +10,7 @@ import FormData from 'form-data'
 
 import CampspotChecker from './CampspotChecker.mjs'
 import { tryGrabCampsite, releaseCampspotCart, warmCampspotWindow } from './CampspotCartBot.mjs'
+import { windowDisplay } from './windowDisplay.mjs'
 import { httpsAgent } from '../permit-bot/dnsBypass.mjs'
 import { writeBotState, appendEvent } from '../dashboard/botState.mjs'
 
@@ -198,7 +199,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
         config: {
             campgroundId: config.campgroundId,
             campgroundName: config.campgroundName,
-            window: `${config.rangeStartDate} → ${config.rangeEndDate}`,
+            window: windowDisplay(config.rangeStartDate, config.rangeEndDate, config.leadDays, checker.effectiveStartDate()),
             weekdays: config.targetWeekdays,
             nights: `${config.minNights}-${config.maxNights}`,
             minPeople: config.minPeople,
@@ -220,6 +221,11 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
     const persistState = () => {
         dashState.lastHeartbeat = new Date().toISOString()
         dashState.metrics.backoffMs = checker.backoffMs
+        // Recompute on every write so the effective floor slides forward as PT
+        // days roll over (leadDays mode). Cheap; no I/O.
+        dashState.config.window = windowDisplay(
+            config.rangeStartDate, config.rangeEndDate, config.leadDays, checker.effectiveStartDate(),
+        )
         try { writeBotState(STATE_FILE, dashState) } catch (err) {
             log.warn(`state write failed: ${err.message}`)
         }
@@ -261,7 +267,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
     await discordPush([
         '🟢 **campspot-bot watch started**',
         `**Campground:** ${config.campgroundName} (${config.campgroundId})`,
-        `**Window:** ${config.rangeStartDate} → ${config.rangeEndDate}`,
+        `**Window:** ${windowDisplay(config.rangeStartDate, config.rangeEndDate, config.leadDays, checker.effectiveStartDate())}`,
         `**Weekdays:** ${config.targetWeekdays.join(', ')} · **Nights:** ${config.minNights}–${config.maxNights}`,
         `**Min capacity:** ${config.minPeople || 'any'} people`,
         `**Warm window:** ${warm ? (warm.loggedIn ? 'on (logged in)' : 'on (NOT logged in — run permit-bot login)') : 'off'}`,
