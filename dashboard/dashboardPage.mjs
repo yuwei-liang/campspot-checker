@@ -102,6 +102,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
   .ev .type { color: var(--accent-3); font-weight: 600; }
   .ev .type.new_stay  { color: var(--accent); }
   .ev .type.cart_attempt { color: var(--accent-2); }
+  .ev .type.skipped_cooldown { color: var(--ink-dim); }
   .ev .type.poll_error { color: var(--warn); }
   .ev .type.heartbeat { color: var(--ink-dim); }
   .ev .body { color: var(--ink); }
@@ -218,6 +219,14 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
                 ? (e.ok ? 'OK' : 'DRIFT: ' + escape((e.errors || []).join('; ')))
               : e.type === 'warm_row_check_failed'
                 ? 'warm row check failed for ' + (e.missing || []).map(m => escape(m.name)).join(', ')
+              : e.type === 'skipped_cooldown'
+                ? (() => {
+                    const first = (e.stays || [])[0];
+                    if (!first) return 'skipped ' + escape(e.count ?? '?') + ' new_stay(s) (cooldown)';
+                    const tail = (e.stays.length > 1) ? ' (+ ' + (e.stays.length - 1) + ' more)' : '';
+                    return 'site ' + escape(first.siteNo) + ' · ' + escape(first.startDate) + ' → ' + escape(first.endDate) +
+                      ' — cooldown ' + escape(first.cooldownMinRemaining) + 'min' + tail;
+                  })()
               : e.type === 'shutdown'
                 ? 'polls=' + escape(e.pollCount ?? '—') + ' uptimeMs=' + escape(e.uptimeMs ?? '—')
                 : escape(JSON.stringify(e).slice(0, 140));

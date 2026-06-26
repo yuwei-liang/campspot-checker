@@ -315,13 +315,44 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                 )
 
                 if (autoGrab && !cartInFlight) {
-                    // Take the best new stay we haven't tried in the last hour.
-                    const ONE_HOUR = 60 * 60 * 1000
+                    // Per-(site, dates) cooldown so we don't burn the warm
+                    // browser on the same slot every 20s while the API
+                    // re-emits it. 1h was too aggressive — user complained
+                    // they saw new_stay pings with no follow-up cart_attempt
+                    // for ~half an hour after the first failed attempt.
+                    // 10 min is the floor that still avoids hammering rec.gov
+                    // when a slot churns rapidly. Tunable via the constant.
+                    const COOLDOWN_MS = 10 * 60 * 1000
+                    const now = Date.now()
                     const candidate = newStays.find(s => {
                         const key = `${s.campsiteId}|${s.startDate}|${s.endDate}`
                         const last = recentlyAttempted.get(key) || 0
-                        return Date.now() - last > ONE_HOUR
+                        return now - last > COOLDOWN_MS
                     })
+                    // Visibility: if we DID see new_stays but every one was
+                    // suppressed by cooldown, log it so the dashboard shows
+                    // "we saw it, here's why we didn't try". Otherwise the
+                    // pattern looks like the bot is asleep.
+                    if (!candidate && newStays.length > 0) {
+                        const cooled = newStays.slice(0, 3).map(s => {
+                            const key = `${s.campsiteId}|${s.startDate}|${s.endDate}`
+                            const last = recentlyAttempted.get(key) || 0
+                            const remainMs = Math.max(0, COOLDOWN_MS - (now - last))
+                            return {
+                                siteNo: s.siteNo,
+                                startDate: s.startDate,
+                                endDate: s.endDate,
+                                nights: s.nights,
+                                cooldownMinRemaining: Math.ceil(remainMs / 60000),
+                            }
+                        })
+                        appendEvent(dashState, {
+                            type: 'skipped_cooldown',
+                            count: newStays.length,
+                            stays: cooled,
+                        })
+                        persistState()
+                    }
                     if (candidate) {
                         cartInFlight = true
                         dashState.metrics.cartAttempts += 1
