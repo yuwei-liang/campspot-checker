@@ -1,2 +1,35 @@
 node_modules
 npm-debug.log
+
+# Secrets — passed via env_file at runtime, never baked into the image.
+.env
+.env.*
+
+# Tooling state / IDE / git
+.git
+.github
+.claude
+.vscode
+.idea
+.DS_Store
+
+# Runtime artifacts (also caught by .gitignore for git-archive builds,
+# but listed here so plain `docker build` tarballs stay slim too).
+log/
+data/
+permit-bot/.chromium-profile
+permit-bot/.chromium-profile-*
+permit-bot/.screenshots
+permit-bot/.traces
+permit-bot/.outbox.jsonl
+permit-bot/.last-page-snapshot.html
+permit-bot/.dom-fingerprint.json
+permit-bot/logs
+permit-bot/reports
+
+campspot-bot/.screenshots
+campspot-bot/.traces
+campspot-bot/.chromium-probe
+campspot-bot/.captures
+campspot-bot/state
+campspot-bot/logs

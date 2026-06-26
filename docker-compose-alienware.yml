@@ -1,0 +1,97 @@
+# Burn-in stack for Alienware (192.168.68.90).
+#
+# Parallel to the Mac deployment: the Mac bots stay running and authoritative
+# until rec.gov anti-bot behavior on Linux-in-Docker is verified to be
+# indistinguishable. Run this stack in DRY-RUN first (see TODO below) so the
+# campspot-bot here just *observes* and reports — no real cart attempts —
+# while the Mac bot continues to actually race.
+#
+# Deploy pattern (matches every other compose in homelab/):
+#     tar czf - Dockerfile.bots docker-compose-alienware.yml package*.json \
+#         dashboard campspot-bot permit-bot server.mjs .env \
+#       | ssh fredcorn@192.168.68.90 \
+#           'mkdir -p /opt/campspot-checker && tar xzf - -C /opt/campspot-checker'
+#     ssh fredcorn@192.168.68.90 \
+#       'cd /opt/campspot-checker && sudo docker compose -f docker-compose-alienware.yml up -d --build'
+#
+# Dashboard URL when up: http://192.168.68.90:8787/bots
+#
+# Volumes intentionally use named volumes (not bind mounts) so they're
+# managed by Docker and survive `docker compose down`. The chromium-profile
+# volume MUST persist across recreates or rec.gov asks for a fresh login
+# every restart.
+
+services:
+  campspot-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bots
+    image: campspot-checker:bots
+    container_name: campspot-bot
+    restart: unless-stopped
+    shm_size: 1gb  # Chromium chokes on Docker's default 64MB /dev/shm
+    env_file:
+      - .env
+    # xvfb-run gives Chromium a virtual $DISPLAY so headless=false (which the
+    # cart bot hard-codes for rec.gov fingerprinting reasons) doesn't crash.
+    # TODO during burn-in: replace `watch --auto-grab` with `check` or a new
+    # `watch --dry-run` flag so this container observes without competing
+    # with the Mac bot for real cart holds. Cut over only when fingerprint
+    # behavior matches.
+    command: ["xvfb-run", "--auto-servernum", "node", "campspot-bot/campspot-bot.mjs", "watch", "--auto-grab"]
+    volumes:
+      - bot-state:/app/campspot-bot/state                  # dashboard mounts ro
+      - chromium-profile:/app/permit-bot/.chromium-profile # shared with permit-bot
+      - campspot-screenshots:/app/campspot-bot/.screenshots
+
+  permit-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bots
+    image: campspot-checker:bots
+    container_name: permit-bot
+    restart: unless-stopped
+    shm_size: 1gb
+    env_file:
+      - .env
+    command: ["xvfb-run", "--auto-servernum", "node", "permit-bot/permit-bot.mjs", "watch-auto"]
+    volumes:
+      - permit-logs:/app/permit-bot/logs                   # dashboard mounts ro
+      - chromium-profile:/app/permit-bot/.chromium-profile # shared with campspot-bot
+      - permit-screenshots:/app/permit-bot/.screenshots
+      - permit-traces:/app/permit-bot/.traces
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.bots
+    image: campspot-checker:bots
+    container_name: campspot-dashboard
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    env_file:
+      - .env
+    environment:
+      - PORT=8787
+      # These point dashboardData.mjs at the volumes the bots write to.
+      # Without them dashboard falls back to ./campspot-bot/state/status.json
+      # and ./permit-bot/logs in its own container — both empty — and renders
+      # a stale-looking but technically-correct "no data" page.
+      - CAMPSPOT_STATE_FILE=/app/campspot-bot/state/status.json
+      - PERMIT_BOT_LOG_DIR=/app/permit-bot/logs
+    command: ["node", "server.mjs"]
+    volumes:
+      - bot-state:/app/campspot-bot/state:ro
+      - permit-logs:/app/permit-bot/logs:ro
+
+# Named volumes — `docker volume ls` to inspect, `docker compose down -v`
+# to nuke (CAUTION: nuking chromium-profile forces a fresh rec.gov login;
+# nuking bot-state / permit-logs wipes the dashboard's view of history).
+volumes:
+  bot-state:
+  permit-logs:
+  chromium-profile:
+  campspot-screenshots:
+  permit-screenshots:
+  permit-traces:
