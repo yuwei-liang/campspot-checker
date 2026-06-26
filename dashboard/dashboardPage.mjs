@@ -93,7 +93,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
 
   .events { display: flex; flex-direction: column; gap: 3px; max-height: 240px; overflow: auto; }
   .ev {
-    display: grid; grid-template-columns: 64px 96px 1fr;
+    display: grid; grid-template-columns: 112px 96px 1fr;
     gap: 8px; font-size: 12px;
     padding: 4px 0; border-bottom: 1px dashed var(--line);
   }
@@ -102,6 +102,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
   .ev .type { color: var(--accent-3); font-weight: 600; }
   .ev .type.new_stay  { color: var(--accent); }
   .ev .type.cart_attempt { color: var(--accent-2); }
+  .ev .type.skipped_cooldown { color: var(--ink-dim); }
   .ev .type.poll_error { color: var(--warn); }
   .ev .type.heartbeat { color: var(--ink-dim); }
   .ev .body { color: var(--ink); }
@@ -143,18 +144,32 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
   function escape(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);
   }
-  // Bot writes all timestamps in UTC (ISO Z); user thinks in Pacific Time.
-  // Format wall-clock times in America/Los_Angeles so the dashboard always
-  // matches what the user sees on their wall and on rec.gov reservation pages
-  // (which are PT-presented anyway).
+  // Bot writes timestamps in UTC. User reads them against a wall clock in PT
+  // and on rec.gov pages (PT). Render all event timestamps in
+  // America/Los_Angeles so the dashboard matches what the user sees.
+  // ptTime is for the header clock (date is implicit: "now"). ptFull is for
+  // event rows where the date matters — events span midnight PT so two rows
+  // could read "23:30" and "00:05" with no way to tell they're a day apart.
   const PT_TIME_FMT = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Los_Angeles', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const PT_FULL_FMT = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles', hour12: false,
+    month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
   function ptTime(iso) {
     if (!iso) return '--';
     try { return PT_TIME_FMT.format(new Date(iso)) + ' PT'; }
     catch { return '--'; }
+  }
+  function ptFull(iso) {
+    if (!iso) return '--';
+    try {
+      // en-US returns "06/25, 21:24:07"; strip the comma so it's compact.
+      return PT_FULL_FMT.format(new Date(iso)).replace(',', '');
+    } catch { return '--'; }
   }
   function ago(iso) {
     if (!iso) return '—';
@@ -204,10 +219,18 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
                 ? (e.ok ? 'OK' : 'DRIFT: ' + escape((e.errors || []).join('; ')))
               : e.type === 'warm_row_check_failed'
                 ? 'warm row check failed for ' + (e.missing || []).map(m => escape(m.name)).join(', ')
+              : e.type === 'skipped_cooldown'
+                ? (() => {
+                    const first = (e.stays || [])[0];
+                    if (!first) return 'skipped ' + escape(e.count ?? '?') + ' new_stay(s) (cooldown)';
+                    const tail = (e.stays.length > 1) ? ' (+ ' + (e.stays.length - 1) + ' more)' : '';
+                    return 'site ' + escape(first.siteNo) + ' · ' + escape(first.startDate) + ' → ' + escape(first.endDate) +
+                      ' — cooldown ' + escape(first.cooldownMinRemaining) + 'min' + tail;
+                  })()
               : e.type === 'shutdown'
                 ? 'polls=' + escape(e.pollCount ?? '—') + ' uptimeMs=' + escape(e.uptimeMs ?? '—')
                 : escape(JSON.stringify(e).slice(0, 140));
-      const t = ptTime(e.ts);
+      const t = ptFull(e.ts);
       return '<div class="ev"><div class="t">' + escape(t) + '</div><div class="type ' + escape(e.type) + '">' + escape(e.type) + '</div><div class="body">' + body + '</div></div>';
     }).join('') + '</div>';
   }
@@ -281,12 +304,34 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
 
   function render(data) {
     clock.textContent = ptTime(data.serverTime);
+    // Preserve scroll state across the wholesale innerHTML swap. Without this,
+    // the page jumps to the top + every event list resets to its top every 5s
+    // — unreadable if the user is mid-scroll. Snapshot the window scroll and
+    // each card's .events scrollTop (keyed by bot name) before the swap, then
+    // restore after.
+    const savedWinScroll = window.scrollY;
+    const savedEvents = new Map();
+    document.querySelectorAll('.card[data-bot]').forEach(card => {
+      const ev = card.querySelector('.events');
+      if (ev) savedEvents.set(card.dataset.bot, ev.scrollTop);
+    });
     grid.innerHTML = data.bots.map(b => {
       const inner = b.bot === 'campspot-bot' ? renderCampspotCard(b)
         : b.bot === 'permit-bot' ? renderPermitBotCard(b)
         : '<div class="absent-card">Unknown bot: ' + escape(b.bot) + '</div>';
-      return '<div class="card">' + inner + '</div>';
+      return '<div class="card" data-bot="' + escape(b.bot) + '">' + inner + '</div>';
     }).join('');
+    // Restore on next frame so the browser has laid out the new DOM.
+    requestAnimationFrame(() => {
+      window.scrollTo(window.scrollX, savedWinScroll);
+      document.querySelectorAll('.card[data-bot]').forEach(card => {
+        const top = savedEvents.get(card.dataset.bot);
+        if (top != null) {
+          const ev = card.querySelector('.events');
+          if (ev) ev.scrollTop = top;
+        }
+      });
+    });
   }
 
   async function tick() {
