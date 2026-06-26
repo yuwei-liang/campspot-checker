@@ -38,15 +38,38 @@ function mergeMonths(target, src) {
     }
 }
 
+// Today's date in PT (America/Los_Angeles), formatted YYYY-MM-DD. The lead-
+// time window is anchored to PT because the user lives in PT, rec.gov dates
+// are presented in PT, and check-in is end-of-day local. Using local Date
+// would drift by a day for users in different timezones; Intl.DateTimeFormat
+// pins it.
+const PT_YMD = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+})
+function todayPT() {
+    return PT_YMD.format(new Date())
+}
+function addDaysPT(yyyymmdd, n) {
+    const ms = Date.parse(`${yyyymmdd}T00:00:00Z`) + n * 86400000
+    return new Date(ms).toISOString().slice(0, 10)
+}
+
 export default class CampspotChecker {
     constructor({
         campgroundId,
-        rangeStartDate, // YYYY-MM-DD inclusive
+        rangeStartDate, // YYYY-MM-DD inclusive (absolute floor)
         rangeEndDate,   // YYYY-MM-DD inclusive
         targetWeekdays = ['Thu', 'Fri', 'Sat', 'Sun'],
         maxNights = 4,
         minNights = 1,
         minPeople = 0,
+        // leadDays: when set, the effective range start is max(rangeStartDate,
+        // today + leadDays) — recomputed on every diff() so the window slides
+        // forward as days pass. Use this when the user needs decision-time
+        // lead time before a trip (e.g. "always 15 days out so the friend
+        // group can plan"). Set 0 / undefined for absolute-only mode.
+        leadDays = 0,
         log,
     }) {
         if (!campgroundId) throw new Error('CampspotChecker: campgroundId required')
@@ -58,6 +81,7 @@ export default class CampspotChecker {
         this.maxNights = maxNights
         this.minNights = minNights
         this.minPeople = minPeople
+        this.leadDays = Number.isFinite(leadDays) ? leadDays : 0
         this.log = log || console
         this.backoffMs = 0
         this.lastErrorReason = null
@@ -65,8 +89,19 @@ export default class CampspotChecker {
         this.lastSeenStays = new Map()
     }
 
+    // Recompute the effective start date — slides forward each PT day when
+    // leadDays > 0. Returns whichever floor is later: the static
+    // rangeStartDate or today + leadDays.
+    effectiveStartDate() {
+        if (this.leadDays > 0) {
+            const dynamicFloor = addDaysPT(todayPT(), this.leadDays)
+            return dynamicFloor > this.rangeStartDate ? dynamicFloor : this.rangeStartDate
+        }
+        return this.rangeStartDate
+    }
+
     monthStarts() {
-        return monthStartsFor(this.rangeStartDate, this.rangeEndDate)
+        return monthStartsFor(this.effectiveStartDate(), this.rangeEndDate)
     }
 
     async pollOnce() {
@@ -88,9 +123,10 @@ export default class CampspotChecker {
     // subset never seen before (dedup keyed by campsiteId|start|end), so
     // callers can notify exactly once per new opening.
     diff(campsitesPayload) {
+        const effStart = this.effectiveStartDate()
         const stays = findAllStays({
             campsitesPayload,
-            rangeStartDate: this.rangeStartDate,
+            rangeStartDate: effStart,
             rangeEndDate: this.rangeEndDate,
             targetWeekdays: this.targetWeekdays,
             maxNights: this.maxNights,
@@ -115,7 +151,7 @@ export default class CampspotChecker {
         return {
             snapshot: {
                 fetchedAt: new Date().toISOString(),
-                rangeStartDate: this.rangeStartDate,
+                rangeStartDate: effStart,
                 rangeEndDate: this.rangeEndDate,
                 stays: ranked,
                 campsiteCount: Object.keys(campsitesPayload || {}).length,
