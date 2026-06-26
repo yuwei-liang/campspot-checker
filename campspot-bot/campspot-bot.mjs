@@ -439,7 +439,13 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
         }
         persistState()
         const elapsed = Date.now() - t0
-        const sleepMs = Math.max(0, config.pollIntervalMs - elapsed) + checker.backoffMs
+        // ±25% jitter on the base interval so we don't look like a metronome
+        // to rec.gov's WAF. 20s polling tripped repeated 429s 2026-06-24 even
+        // though it's only 3 req/min — a perfectly periodic cadence is itself
+        // a fingerprint. Jitter keeps the AVERAGE rate the same but smears
+        // the requests across a window so we don't stack on the same second.
+        const jitterMs = Math.floor((Math.random() - 0.5) * config.pollIntervalMs * 0.5)
+        const sleepMs = Math.max(0, config.pollIntervalMs - elapsed + jitterMs) + checker.backoffMs
         await new Promise(r => setTimeout(r, sleepMs))
     }
 }
