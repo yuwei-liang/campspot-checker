@@ -1,14 +1,23 @@
 {
-  "campgroundId": "232447",
-  "campgroundName": "Upper Pines Campground",
-  "park": "Yosemite",
-  "leadDays": 15,
-  "rangeStartDate": "2026-06-22",
-  "rangeEndDate": "2026-09-30",
-  "targetWeekdays": ["Thu", "Fri", "Sat", "Sun"],
-  "maxNights": 4,
-  "minNights": 2,
-  "minPeople": 6,
-  "pollIntervalMs": 30000,
-  "autoCart": false
+  "shared": {
+    "leadDays": 15,
+    "rangeStartDate": "2026-06-22",
+    "rangeEndDate": "2026-09-30",
+    "targetWeekdays": ["Thu", "Fri", "Sat", "Sun"],
+    "maxNights": 4,
+    "minNights": 2,
+    "minPeople": 6,
+    "pollIntervalMs": 30000,
+    "autoCart": false
+  },
+  "campgrounds": [
+    { "campgroundId": "232447", "campgroundName": "Upper Pines Campground", "park": "Yosemite" },
+    { "campgroundId": "232450", "campgroundName": "Lower Pines Campground", "park": "Yosemite" },
+    { "campgroundId": "232449", "campgroundName": "North Pines Campground", "park": "Yosemite" },
+    { "campgroundId": "232451", "campgroundName": "Hodgdon Meadow Campground", "park": "Yosemite" },
+    { "campgroundId": "232452", "campgroundName": "Crane Flat Campground", "park": "Yosemite" },
+    { "campgroundId": "232446", "campgroundName": "Wawona Campground", "park": "Yosemite" },
+    { "campgroundId": "232453", "campgroundName": "Bridalveil Creek Campground", "park": "Yosemite" },
+    { "campgroundId": "232448", "campgroundName": "Tuolumne Meadows Campground", "park": "Yosemite" }
+  ]
 }

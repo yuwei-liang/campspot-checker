@@ -7,15 +7,31 @@
 // retired 2026-06-22 — campspot-bot's auto-cart flow covers the use case
 // end-to-end now. server.mjs is dashboard-only.
 import path from 'node:path'
+import { readdirSync, existsSync } from 'node:fs'
 import { readBotState, classifyLiveness, isPidAlive } from './botState.mjs'
 import { readPermitBotState } from './permitBotState.mjs'
 
 // Resolved at call time so the dashboard can read campspot-bot's state from a
-// different checkout via CAMPSPOT_STATE_FILE (symmetric to PERMIT_BOT_LOG_DIR).
+// different checkout via CAMPSPOT_STATE_DIR (symmetric to PERMIT_BOT_LOG_DIR).
 // Default is the running server's cwd, which Just Works when the dashboard
-// runs out of the same checkout as the bot.
-function campspotStateFile() {
-    return path.resolve(process.env.CAMPSPOT_STATE_FILE || './campspot-bot/state/status.json')
+// runs out of the same checkout as the bot. CAMPSPOT_STATE_FILE is the legacy
+// single-file knob — still honored so existing deployments don't break, but
+// the multi-campground path is the directory scan.
+function campspotStateDir() {
+    if (process.env.CAMPSPOT_STATE_DIR) return path.resolve(process.env.CAMPSPOT_STATE_DIR)
+    if (process.env.CAMPSPOT_STATE_FILE) return path.dirname(path.resolve(process.env.CAMPSPOT_STATE_FILE))
+    return path.resolve('./campspot-bot/state')
+}
+
+function campspotStateFiles() {
+    const dir = campspotStateDir()
+    if (!existsSync(dir)) return []
+    // Match the per-campground naming the bot writes — `status-<id>.json`.
+    // The legacy `status.json` (single-campground deployments) is included
+    // so dashboards updating ahead of bots don't blank out the card.
+    return readdirSync(dir)
+        .filter(f => /^status(-.+)?\.json$/.test(f))
+        .map(f => path.join(dir, f))
 }
 
 export function buildDashboardData() {
@@ -48,27 +64,39 @@ export function buildDashboardData() {
     }
 
     // --- campspot-bot -------------------------------------------------------
-    const campspot = readBotState(campspotStateFile())
-    const campspotView = campspot ? {
-        ...campspot,
-        label: 'campspot-bot (Upper Pines auto-cart)',
-        // Process-level liveness wins when we have a pid: a dead pid is a
-        // dead bot even if the heartbeat looks recent (process just exited).
-        liveness: isPidAlive(campspot.pid)
-            ? classifyLiveness({
-                lastHeartbeatIso: campspot.lastHeartbeat,
-                pollIntervalMs: campspot.config?.pollIntervalMs,
-            })
-            : 'dead',
-    } : {
-        bot: 'campspot-bot',
-        label: 'campspot-bot (Upper Pines auto-cart)',
-        liveness: 'absent',
-        absentReason: 'not started yet — run `node campspot-bot/campspot-bot.mjs watch --auto-grab`',
+    // One card per running watch — each campground writes its own state file.
+    // If nothing is on disk yet, surface a single "absent" placeholder so the
+    // dashboard still tells the operator what to run.
+    const stateFiles = campspotStateFiles()
+    const campspotViews = stateFiles
+        .map(f => readBotState(f))
+        .filter(Boolean)
+        .map(s => ({
+            ...s,
+            label: campspotLabel(s),
+            liveness: isPidAlive(s.pid)
+                ? classifyLiveness({
+                    lastHeartbeatIso: s.lastHeartbeat,
+                    pollIntervalMs: s.config?.pollIntervalMs,
+                })
+                : 'dead',
+        }))
+    if (campspotViews.length === 0) {
+        campspotViews.push({
+            bot: 'campspot-bot',
+            label: 'campspot-bot',
+            liveness: 'absent',
+            absentReason: 'not started yet — run `node campspot-bot/campspot-bot.mjs watch --campground=<id>`',
+        })
     }
 
     return {
         serverTime: now,
-        bots: [permitView, campspotView],
+        bots: [permitView, ...campspotViews],
     }
+}
+
+function campspotLabel(state) {
+    const name = state.config?.campgroundName
+    return name ? `campspot-bot (${name})` : 'campspot-bot'
 }

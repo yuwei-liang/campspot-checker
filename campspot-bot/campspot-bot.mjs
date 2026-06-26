@@ -2,7 +2,6 @@
 import * as dotenv from 'dotenv'
 dotenv.config()
 
-import { readFileSync } from 'node:fs'
 import { createReadStream } from 'node:fs'
 import path from 'node:path'
 import axios from 'axios'
@@ -11,10 +10,18 @@ import FormData from 'form-data'
 import CampspotChecker from './CampspotChecker.mjs'
 import { tryGrabCampsite, releaseCampspotCart, warmCampspotWindow } from './CampspotCartBot.mjs'
 import { windowDisplay } from './windowDisplay.mjs'
+import { loadConfigsFromFile, selectCampground } from './configLoader.mjs'
 import { httpsAgent } from '../permit-bot/dnsBypass.mjs'
 import { writeBotState, appendEvent, resetBackoffWithRecovery } from '../dashboard/botState.mjs'
 
-const STATE_FILE = path.resolve('./campspot-bot/state/status.json')
+const CONFIG_FILE = path.resolve('./campspot-bot/config.json')
+const STATE_DIR = path.resolve('./campspot-bot/state')
+
+// One state file per campground so multi-watch processes don't stomp each
+// other and the dashboard can scan the dir for every active bot.
+function stateFileFor(campgroundId) {
+    return path.join(STATE_DIR, `status-${campgroundId}.json`)
+}
 
 const log = {
     info: (msg) => console.log(`[${new Date().toISOString()}] ${msg}`),
@@ -30,9 +37,9 @@ const DISCORD_WEBHOOK_URL = process.env.CAMPSPOT_DISCORD_WEBHOOK_URL
     || null
 const NTFY_TOPIC_URL = process.env.NTFY_TOPIC_URL || null
 
-function loadConfig() {
-    const p = path.resolve('./campspot-bot/config.json')
-    return JSON.parse(readFileSync(p, 'utf-8'))
+function pickConfig(campgroundIdArg) {
+    const configs = loadConfigsFromFile(CONFIG_FILE)
+    return selectCampground(configs, campgroundIdArg)
 }
 
 async function discordPush(text, screenshotPath = null) {
@@ -95,8 +102,8 @@ function bookingUrl(campgroundId, s) {
     return `https://www.recreation.gov/camping/campgrounds/${campgroundId}?startdate=${s.startDate}&enddate=${s.endDate}`
 }
 
-async function cmdCheck() {
-    const config = loadConfig()
+async function cmdCheck({ campgroundId } = {}) {
+    const config = pickConfig(campgroundId)
     const checker = new CampspotChecker({
         campgroundId: config.campgroundId,
         rangeStartDate: config.rangeStartDate,
@@ -120,8 +127,8 @@ async function cmdCheck() {
     }
 }
 
-async function cmdCart({ overrides = {}, dryRun = true, accountIndex = 1 } = {}) {
-    const config = loadConfig()
+async function cmdCart({ overrides = {}, dryRun = true, accountIndex = 1, campgroundId } = {}) {
+    const config = pickConfig(campgroundId)
     if (!overrides.siteNo || !overrides.startDate || !overrides.endDate) {
         console.error('Usage: cart --site=068 --start=2026-06-22 --end=2026-06-23 [--for-real] [--account=N]')
         process.exit(2)
@@ -165,8 +172,8 @@ async function cmdRelease({ accountIndex = 1 } = {}) {
 // watch: poll continuously, notify on new openings. With --auto-grab, fires
 // CampspotCartBot on the highest-ranked new stay (sequentially — one cart at
 // a time so we don't trigger captchas).
-async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
-    const config = loadConfig()
+async function cmdWatch({ autoGrab = false, accountIndex = 1, campgroundId } = {}) {
+    const config = pickConfig(campgroundId)
     const checker = new CampspotChecker({
         campgroundId: config.campgroundId,
         rangeStartDate: config.rangeStartDate,
@@ -226,7 +233,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
         dashState.config.window = windowDisplay(
             config.rangeStartDate, config.rangeEndDate, config.leadDays, checker.effectiveStartDate(),
         )
-        try { writeBotState(STATE_FILE, dashState) } catch (err) {
+        try { writeBotState(stateFileFor(config.campgroundId), dashState) } catch (err) {
             log.warn(`state write failed: ${err.message}`)
         }
     }
@@ -520,12 +527,14 @@ const kv = Object.fromEntries(
 ;(async () => {
     try {
         const accountIndex = kv.account ? Number(kv.account) : 1
+        const campgroundId = kv.campground || null
         switch (subcommand) {
             case 'check':
-                await cmdCheck(); break
+                await cmdCheck({ campgroundId }); break
             case 'cart':
                 await cmdCart({
                     accountIndex,
+                    campgroundId,
                     dryRun: !flags.has('--for-real'),
                     overrides: {
                         siteNo: kv.site,
@@ -537,16 +546,17 @@ const kv = Object.fromEntries(
             case 'release-cart':
                 await cmdRelease({ accountIndex }); break
             case 'watch':
-                await cmdWatch({ autoGrab: flags.has('--auto-grab'), accountIndex }); break
+                await cmdWatch({ autoGrab: flags.has('--auto-grab'), accountIndex, campgroundId }); break
             default:
                 console.log(`Usage:
-  node campspot-bot/campspot-bot.mjs check                                  # one-shot availability scan
-  node campspot-bot/campspot-bot.mjs cart --site=068 --start=YYYY-MM-DD --end=YYYY-MM-DD [--for-real] [--account=N]
-                                                                            # dry-run by default; --for-real adds to cart
-  node campspot-bot/campspot-bot.mjs release-cart [--account=N]             # clear holds (test cleanup)
-  node campspot-bot/campspot-bot.mjs watch [--auto-grab] [--account=N]      # poll continuously, notify; --auto-grab fires the cart bot
+  node campspot-bot/campspot-bot.mjs check [--campground=ID]                              # one-shot availability scan
+  node campspot-bot/campspot-bot.mjs cart [--campground=ID] --site=068 --start=YYYY-MM-DD --end=YYYY-MM-DD [--for-real] [--account=N]
+                                                                                          # dry-run by default; --for-real adds to cart
+  node campspot-bot/campspot-bot.mjs release-cart [--account=N]                           # clear holds (test cleanup)
+  node campspot-bot/campspot-bot.mjs watch [--campground=ID] [--auto-grab] [--account=N]  # poll continuously, notify; --auto-grab fires the cart bot
 
-Edit campspot-bot/config.json for campgroundId / weekday filter / window.
+--campground=ID picks one entry from config.campgrounds[]; defaults to the first.
+Run one watch process per campground (tmux) to fan out across multiple targets.
 Re-uses the permit-bot rec.gov session — run \`node permit-bot/permit-bot.mjs login\` first.
 `)
                 process.exit(1)
