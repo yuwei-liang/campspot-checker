@@ -6,7 +6,7 @@ log/
 data/
 
 
-.claude/settings.local.json
+.claude/
 
 permit-bot/.chromium-profile/
 permit-bot/.chromium-profile-*/
