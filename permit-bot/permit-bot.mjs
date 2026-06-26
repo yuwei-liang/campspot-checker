@@ -16,6 +16,7 @@ import { httpsAgent } from './dnsBypass.mjs'
 import { benchmarkPolling } from './benchmark.mjs'
 import { runChartCommand, latestSessionLogPath } from './chart.mjs'
 import { resetBackoffWithRecovery } from '../dashboard/botState.mjs'
+import { getActiveTargetDates, describeActiveDates, todayInPT } from './dateRoll.mjs'
 
 const log = {
     info: (msg) => console.log(`[${new Date().toISOString()}] ${msg}`),
@@ -198,10 +199,16 @@ async function cmdVerifyConfig() {
         // explicitly (older configs without the field still get token matching).
         nameTokens: t.nameTokens || [t.name.split('->')[0].trim(), t.name.split(' (')[0].split('->').pop().trim()],
     }))
-    log.info(`verify-config: probing ${targets.length} targets against live rec.gov`)
+    const activeDates = getActiveTargetDates(config)
+    const probeDate = activeDates[0] || config.targetDates?.[0]
+    if (!probeDate) {
+        console.error('verify-config: no active target dates available (config exhausted). Update config.json.')
+        process.exit(1)
+    }
+    log.info(`verify-config: probing ${targets.length} targets against live rec.gov (date=${probeDate})`)
     const result = await verifyConfigOnce({
         permitId: config.permitId,
-        date: config.targetDates[0],
+        date: probeDate,
         partySize: config.partySize,
         targets,
         log,
@@ -220,10 +227,16 @@ async function cmdVerifyConfig() {
 
 async function cmdProbe() {
     const config = loadConfig()
+    const activeDates = getActiveTargetDates(config)
+    if (activeDates.length === 0) {
+        console.error(`probe: no active target dates. ${describeActiveDates(config)}`)
+        process.exit(1)
+    }
+    log.info(`probe: ${describeActiveDates(config)}`)
     const checker = new PermitChecker({
         permitId: config.permitId,
         targets: config.targets,
-        targetDates: config.targetDates,
+        targetDates: activeDates,
         log,
     })
     const payload = await checker.pollOnce()
@@ -421,10 +434,26 @@ async function cmdWatchAuto({
     const GP_TOKENS = simulate ? ['Cottonwood Creek'] : ['Glacier Point', 'Little Yosemite Valley']
     const HI_TARGET = { divisionId: HI_ID, name: HI_NAME, nameTokens: HI_TOKENS }
     const GP_TARGET = { divisionId: GP_ID, name: GP_NAME, nameTokens: GP_TOKENS }
+
+    // Active dates roll forward with the calendar. We recompute every loop
+    // iteration so a watch-auto left running across midnight PT picks up
+    // the next release night automatically (offsets mode) or drops past
+    // dates (static mode). Empty set at startup = nothing to race — bail
+    // loudly rather than silently polling zero divisions.
+    let activeDates = getActiveTargetDates(config)
+    if (activeDates.length === 0) {
+        log.error(`watch-auto: no active target dates. ${describeActiveDates(config)}`)
+        await discordPush([
+            '🔴 **watch-auto refused to start: no active target dates**',
+            `\`${describeActiveDates(config)}\``,
+            'Update `permit-bot/config.json` (set `targetDateOffsetsDays` or refresh `targetDates`) and re-run.',
+        ].join('\n'))
+        return
+    }
     const checker = new PermitChecker({
         permitId: config.permitId,
         targets: [HI_TARGET, GP_TARGET],
-        targetDates: config.targetDates,
+        targetDates: activeDates,
         log,
     })
 
@@ -488,10 +517,12 @@ async function cmdWatchAuto({
         second: '2-digit',
     }).format(new Date(iso))
 
-    log.info(`watch-auto: targets=LYV (HI+GP), dates=${config.targetDates.join(', ')}, poll=${config.pollIntervalMs}ms, preWarm=${preWarm}`)
+    log.info(`watch-auto: targets=LYV (HI+GP), dates=${activeDates.join(', ')}, poll=${config.pollIntervalMs}ms, preWarm=${preWarm}`)
+    log.info(`Date selection: ${describeActiveDates(config)}`)
     log.info(`Session log: ${session.filePath}`)
     session.write('startup', {
-        targets: config.targetDates,
+        targets: activeDates,
+        dateSelection: describeActiveDates(config),
         pollIntervalMs: config.pollIntervalMs,
         preWarm,
         simulate,
@@ -502,7 +533,8 @@ async function cmdWatchAuto({
     // Startup Discord ping so you know the monitor is up.
     await discordPush([
         '🟢 **watch-auto started**',
-        `**Dates:** ${config.targetDates.join(', ')}`,
+        `**Dates:** ${activeDates.join(', ')}`,
+        `**Date selection:** \`${describeActiveDates(config)}\``,
         `**Poll interval:** ${config.pollIntervalMs}ms`,
         `**Pre-warm:** ${preWarm ? 'on (acct1 HI party=7)' : 'off'}`,
         `**Mode:** ${simulate ? 'SIMULATE → Cottonwood Creek' : 'LYV LIVE'}`,
@@ -528,7 +560,7 @@ async function cmdWatchAuto({
         const expectedTargets = [HI_TARGET, GP_TARGET]
         const results = await Promise.allSettled(specs.map(spec => warmCart({
             permitId: config.permitId,
-            date: config.targetDates[0],
+            date: activeDates[0],
             partySize: spec.partySize,
             accountIndex: spec.accountIndex,
             expectedTargets,
@@ -799,6 +831,34 @@ async function cmdWatchAuto({
     // Main poll loop.
     while (!firedThisRun) {
         const tickStart = Date.now()
+
+        // Re-derive active dates each tick. In offsets mode this auto-rolls
+        // across midnight PT; in static mode it drops dates as they pass.
+        // Cheap (just date arithmetic) so we can do it every poll.
+        const newActiveDates = getActiveTargetDates(config)
+        if (newActiveDates.length === 0) {
+            log.error(`watch-auto: active dates set went empty. ${describeActiveDates(config)}. Exiting.`)
+            await discordPush([
+                '🔴 **watch-auto exiting: no active target dates left**',
+                `\`${describeActiveDates(config)}\``,
+                'All configured dates have passed. Update `permit-bot/config.json` and restart.',
+            ].join('\n'))
+            session.write('shutdown_no_dates', { describe: describeActiveDates(config) })
+            break
+        }
+        if (newActiveDates.join(',') !== activeDates.join(',')) {
+            log.info(`active dates rolled: ${activeDates.join(',')} → ${newActiveDates.join(',')}`)
+            session.write('dates_rolled', { from: activeDates, to: newActiveDates })
+            await discordPush([
+                '🔄 **watch-auto rolled target dates**',
+                `**From:** ${activeDates.join(', ') || '(empty)'}`,
+                `**To:** ${newActiveDates.join(', ')}`,
+                `_${describeActiveDates(config)}_`,
+            ].join('\n'))
+            activeDates = newActiveDates
+            checker.targetDates = activeDates
+        }
+
         try {
             const payload = await checker.pollOnce()
             const { snapshot } = checker.diff(payload)
@@ -893,7 +953,7 @@ async function cmdWatchAuto({
                 try {
                     const verifyResult = await verifyConfigOnce({
                         permitId: config.permitId,
-                        date: config.targetDates[0],
+                        date: activeDates[0],
                         partySize: config.partySize,
                         targets: [HI_TARGET, GP_TARGET],
                         log: { info: () => {}, warn: log.warn, error: log.error },
@@ -936,12 +996,9 @@ async function cmdWatchAuto({
 
             // Per-cell window summary. One line per (date, division) showing
             // how the API ticked across the heartbeat window. Order: dates by
-            // target list, divisions HI then GP.
-            const datesForWindow = config.targetDates.length
-                ? [...config.targetDates].sort()
-                : [...new Set([...windowStats.keys()].map(k => k.split('|')[0]))].sort()
+            // active list, divisions HI then GP.
             const windowLines = []
-            for (const d of datesForWindow) {
+            for (const d of activeDates) {
                 for (const divName of ['hi', 'gp']) {
                     const key = `${d}|${divName}`
                     const stats = windowStats.get(key)
@@ -967,7 +1024,7 @@ async function cmdWatchAuto({
             // current floor, how many polls in the window had enough stock.
             // Direct answer to "should I lower partyTargets?" Reset alongside.
             const wfLines = []
-            for (const d of datesForWindow) {
+            for (const d of activeDates) {
                 const wf = wouldFireStats.get(d)
                 if (!wf) continue
                 const cells = WOULD_FIRE_SIZES
@@ -1002,6 +1059,7 @@ async function cmdWatchAuto({
                 `💓 **watch-auto heartbeat** ${statusEmoji}`,
                 `**Uptime:** ${uptimeMin} min`,
                 `**Polls:** ${pollCount}`,
+                `**Today (PT):** ${todayInPT()} → **active dates:** ${activeDates.join(', ')}`,
                 `**Last snapshot:** ${lastSnapshotSummary}`,
                 `**API window (last ${Math.round(HEARTBEAT_MS / 60000)} min):**`,
                 ...windowLines.map(l => `  ${l}`),
@@ -1050,10 +1108,15 @@ async function cmdWatchAuto({
 
 async function cmdWatch({ autoGrab = false } = {}) {
     const config = loadConfig()
+    let activeDates = getActiveTargetDates(config)
+    if (activeDates.length === 0) {
+        log.error(`watch: no active target dates. ${describeActiveDates(config)}`)
+        process.exit(1)
+    }
     const checker = new PermitChecker({
         permitId: config.permitId,
         targets: config.targets,
-        targetDates: config.targetDates,
+        targetDates: activeDates,
         log,
     })
 
@@ -1062,11 +1125,25 @@ async function cmdWatch({ autoGrab = false } = {}) {
     const fired = new Set()
     let grabInFlight = false
 
-    log.info(`Watching permit ${config.permitId} for ${config.targetDates.join(', ')}`)
+    log.info(`Watching permit ${config.permitId} for ${activeDates.join(', ')}`)
+    log.info(`Date selection: ${describeActiveDates(config)}`)
     log.info(`Targets: ${config.targets.map(t => t.name).join(' | ')}`)
     log.info(`Auto-grab: ${autoGrab ? 'ON' : 'OFF (notify only)'}; ntfy: ${NTFY_TOPIC_URL ? 'on' : 'off'}`)
 
     while (true) {
+        // Same per-tick recompute as watch-auto — drops past dates, rolls
+        // offsets, keeps `checker.targetDates` honest across midnight PT.
+        const newActiveDates = getActiveTargetDates(config)
+        if (newActiveDates.length === 0) {
+            log.error(`watch: active dates exhausted. ${describeActiveDates(config)}. Exiting.`)
+            break
+        }
+        if (newActiveDates.join(',') !== activeDates.join(',')) {
+            log.info(`active dates rolled: ${activeDates.join(',')} → ${newActiveDates.join(',')}`)
+            activeDates = newActiveDates
+            checker.targetDates = activeDates
+        }
+
         const intervalMs = pickIntervalMs(config)
         const start = Date.now()
         try {
