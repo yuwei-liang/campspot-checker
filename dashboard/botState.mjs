@@ -37,6 +37,20 @@ export function appendEvent(state, event) {
     }
 }
 
+// Atomic "reset backoff + emit recovery" pair. Without this, a 429 burst
+// followed by silence on the dashboard makes it look like the bot is wedged
+// when in fact the next cycle succeeded — emit() runs only when we were
+// actually backed off, so quiet recoveries don't spam the event stream.
+// Wrapping both steps stops a future caller from resetting backoff without
+// also publishing the recovery, which is the actual bug we want to lock out.
+export function resetBackoffWithRecovery(checker, emit) {
+    const priorBackoffMs = checker.backoffMs
+    checker.resetBackoff()
+    if (priorBackoffMs > 0) {
+        emit({ priorBackoffMs })
+    }
+}
+
 // Liveness from a heartbeat timestamp + the bot's poll interval. We tolerate
 // a 3× expected interval before declaring "stale" — accounts for slow cycles
 // (cart automation takes 10-30s) without blinking the dashboard.

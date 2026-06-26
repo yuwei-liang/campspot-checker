@@ -11,7 +11,7 @@ import FormData from 'form-data'
 import CampspotChecker from './CampspotChecker.mjs'
 import { tryGrabCampsite, releaseCampspotCart, warmCampspotWindow } from './CampspotCartBot.mjs'
 import { httpsAgent } from '../permit-bot/dnsBypass.mjs'
-import { writeBotState, appendEvent } from '../dashboard/botState.mjs'
+import { writeBotState, appendEvent, resetBackoffWithRecovery } from '../dashboard/botState.mjs'
 
 const STATE_FILE = path.resolve('./campspot-bot/state/status.json')
 
@@ -274,7 +274,8 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
         try {
             const payload = await checker.pollOnce()
             const { snapshot, newStays } = checker.diff(payload)
-            checker.resetBackoff()
+            resetBackoffWithRecovery(checker, ({ priorBackoffMs }) =>
+                appendEvent(dashState, { type: 'poll_recovered', priorBackoffMs }))
             log.info(`cycle ${cycle}: ${snapshot.stays.length} stays (${newStays.length} new)`)
 
             dashState.metrics.cycles = cycle

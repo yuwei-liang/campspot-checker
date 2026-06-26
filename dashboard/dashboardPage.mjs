@@ -104,6 +104,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
   .ev .type.cart_attempt { color: var(--accent-2); }
   .ev .type.skipped_cooldown { color: var(--ink-dim); }
   .ev .type.poll_error { color: var(--warn); }
+  .ev .type.poll_recovered { color: var(--accent); }
   .ev .type.heartbeat { color: var(--ink-dim); }
   .ev .body { color: var(--ink); }
 
@@ -213,6 +214,8 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
                 ? 'mode=' + escape(e.mode || '—')
               : e.type === 'poll_error'
                 ? escape(e.error || '') + ' (backoff ' + escape(e.backoffMs ?? 0) + 'ms)'
+              : e.type === 'poll_recovered'
+                ? 'poll ok again (cleared ' + escape(e.priorBackoffMs ?? 0) + 'ms backoff)'
               : e.type === 'decision_skipped'
                 ? escape(e.date) + ' skipped: ' + escape(e.reason || '')
               : e.type === 'verify_config'
