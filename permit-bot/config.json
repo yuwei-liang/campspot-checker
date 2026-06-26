@@ -13,7 +13,8 @@
       "nameTokens": ["Glacier Point", "Little Yosemite Valley"]
     }
   ],
-  "targetDates": ["2026-06-19", "2026-06-20"],
+  "targetDateOffsetsDays": [7, 8],
+  "_targetDates_comment": "Auto-roll: each day at midnight PT the active set advances by 1. [7,8] means we always monitor the night that released this morning at 7am PT plus the night that releases tomorrow at 7am. To pin to specific calendar dates instead (e.g. trip-locked), delete targetDateOffsetsDays and set: \"targetDates\": [\"YYYY-MM-DD\", ...]",
   "partySize": 7,
   "pollIntervalMs": 1500,
   "burstWindow": {
