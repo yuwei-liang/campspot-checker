@@ -104,9 +104,10 @@ async function cmdCheck() {
         maxNights: config.maxNights,
         minNights: config.minNights,
         minPeople: config.minPeople,
+        leadDays: config.leadDays,
         log,
     })
-    log.info(`check: cg=${config.campgroundId} window=${config.rangeStartDate}..${config.rangeEndDate} weekdays=${config.targetWeekdays.join(',')} nights=${config.minNights}-${config.maxNights} minPeople=${config.minPeople}`)
+    log.info(`check: cg=${config.campgroundId} window=${checker.effectiveStartDate()}..${config.rangeEndDate} (leadDays=${config.leadDays || 0}) weekdays=${config.targetWeekdays.join(',')} nights=${config.minNights}-${config.maxNights} minPeople=${config.minPeople}`)
     const payload = await checker.pollOnce()
     const { snapshot } = checker.diff(payload)
     log.info(`Scanned ${snapshot.campsiteCount} campsites, found ${snapshot.stays.length} qualifying stays.`)
@@ -173,9 +174,10 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
         maxNights: config.maxNights,
         minNights: config.minNights,
         minPeople: config.minPeople,
+        leadDays: config.leadDays,
         log,
     })
-    log.info(`watch: cg=${config.campgroundId} window=${config.rangeStartDate}..${config.rangeEndDate} ` +
+    log.info(`watch: cg=${config.campgroundId} window=${checker.effectiveStartDate()}..${config.rangeEndDate} (leadDays=${config.leadDays || 0}) ` +
         `weekdays=${config.targetWeekdays.join(',')} nights=${config.minNights}-${config.maxNights} ` +
         `minPeople=${config.minPeople} poll=${config.pollIntervalMs}ms autoGrab=${autoGrab}`)
 
@@ -399,6 +401,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                         siteNo: toFire.siteNo,
                                         startDate: toFire.startDate,
                                         endDate: toFire.endDate,
+                                        minNights: config.minNights,
                                     })
                                     : await tryGrabCampsite({
                                         campgroundId: config.campgroundId,
@@ -408,6 +411,7 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                         endDate: toFire.endDate,
                                         dryRun: false,
                                         accountIndex,
+                                        minNights: config.minNights,
                                         log,
                                     })
                                 if (r.cartState === 'held') dashState.metrics.cartHolds += 1
@@ -425,7 +429,9 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                 const status = r.cartState === 'held'
                                     ? '✅ **CART HOLD CONFIRMED** — go check out!'
                                     : r.cartState === 'wrong_trip'
-                                        ? `⚠️ **WRONG TRIP** — rec.gov gave us check-out ${r.observed?.checkOut} (wanted ${toFire.endDate}). Hold auto-released.`
+                                        ? (r.autoReleased
+                                            ? `⚠️ **WRONG TRIP** — rec.gov gave us ${r.observed?.checkIn ?? '?'} → ${r.observed?.checkOut ?? '?'} (wanted ${toFire.startDate}→${toFire.endDate}, ${r.partialNights ?? '?'}n < minNights). Auto-released.`
+                                            : `🟡 **PARTIAL HOLD** — ${r.partialNights ?? '?'}n hold (${r.observed?.checkIn ?? '?'} → ${r.observed?.checkOut ?? '?'}), wanted ${toFire.nights}n. Decide before 15-min timer expires.`)
                                         : `⚠️ auto-grab finished — cart state: ${r.cartState ?? r.reason ?? 'unknown'}`
                                 await discordPush([
                                     status,
@@ -442,6 +448,18 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
                                             click: 'https://www.recreation.gov/cart',
                                             priority: 'max',
                                             tags: 'tent,white_check_mark,rotating_light',
+                                        },
+                                    )
+                                } else if (r.cartState === 'wrong_trip' && !r.autoReleased) {
+                                    // Partial hold that we KEPT because it meets minNights —
+                                    // user should check it. ntfy with same urgency as held.
+                                    await pushNtfy(
+                                        `PARTIAL: ${config.campgroundName} site ${toFire.siteNo}`,
+                                        `Got ${r.partialNights ?? '?'}n (${r.observed?.checkIn ?? '?'} → ${r.observed?.checkOut ?? '?'}) — wanted ${toFire.nights}n. Check cart NOW, 15-min timer running.`,
+                                        {
+                                            click: 'https://www.recreation.gov/cart',
+                                            priority: 'max',
+                                            tags: 'tent,warning,rotating_light',
                                         },
                                     )
                                 }
@@ -470,7 +488,13 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1 } = {}) {
         }
         persistState()
         const elapsed = Date.now() - t0
-        const sleepMs = Math.max(0, config.pollIntervalMs - elapsed) + checker.backoffMs
+        // ±25% jitter on the base interval so we don't look like a metronome
+        // to rec.gov's WAF. 20s polling tripped repeated 429s 2026-06-24 even
+        // though it's only 3 req/min — a perfectly periodic cadence is itself
+        // a fingerprint. Jitter keeps the AVERAGE rate the same but smears
+        // the requests across a window so we don't stack on the same second.
+        const jitterMs = Math.floor((Math.random() - 0.5) * config.pollIntervalMs * 0.5)
+        const sleepMs = Math.max(0, config.pollIntervalMs - elapsed + jitterMs) + checker.backoffMs
         await new Promise(r => setTimeout(r, sleepMs))
     }
 }
