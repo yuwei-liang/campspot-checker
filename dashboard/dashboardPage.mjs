@@ -295,12 +295,34 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
 
   function render(data) {
     clock.textContent = ptTime(data.serverTime);
+    // Preserve scroll state across the wholesale innerHTML swap. Without this,
+    // the page jumps to the top + every event list resets to its top every 5s
+    // — unreadable if the user is mid-scroll. Snapshot the window scroll and
+    // each card's .events scrollTop (keyed by bot name) before the swap, then
+    // restore after.
+    const savedWinScroll = window.scrollY;
+    const savedEvents = new Map();
+    document.querySelectorAll('.card[data-bot]').forEach(card => {
+      const ev = card.querySelector('.events');
+      if (ev) savedEvents.set(card.dataset.bot, ev.scrollTop);
+    });
     grid.innerHTML = data.bots.map(b => {
       const inner = b.bot === 'campspot-bot' ? renderCampspotCard(b)
         : b.bot === 'permit-bot' ? renderPermitBotCard(b)
         : '<div class="absent-card">Unknown bot: ' + escape(b.bot) + '</div>';
-      return '<div class="card">' + inner + '</div>';
+      return '<div class="card" data-bot="' + escape(b.bot) + '">' + inner + '</div>';
     }).join('');
+    // Restore on next frame so the browser has laid out the new DOM.
+    requestAnimationFrame(() => {
+      window.scrollTo(window.scrollX, savedWinScroll);
+      document.querySelectorAll('.card[data-bot]').forEach(card => {
+        const top = savedEvents.get(card.dataset.bot);
+        if (top != null) {
+          const ev = card.querySelector('.events');
+          if (ev) ev.scrollTop = top;
+        }
+      });
+    });
   }
 
   async function tick() {
