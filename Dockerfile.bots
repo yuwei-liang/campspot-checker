@@ -1,0 +1,45 @@
+# Bot + dashboard image for the Alienware stack. Different from the NAS
+# Dockerfile (which builds a tiny dashboard-only node:22 image): this one
+# bakes in Playwright's system deps + a matching Chromium + xvfb so the
+# campspot-bot and permit-bot auto-grab paths (`headless: false`) can run
+# inside a container with no real display attached.
+#
+# Why Playwright's image instead of installing it ourselves:
+#   - It already includes the exact Chromium build matched to the npm
+#     `playwright@1.60.0` package — version drift between the two is a
+#     known source of "Target page, context or browser has been closed"
+#     errors mid-run.
+#   - Ships every Linux system dep Chromium needs (fonts, NSS, libgbm,
+#     libasound, libxkbcommon, libxshmfence, etc.). Maintained upstream;
+#     we don't have to track Ubuntu Jammy package renames.
+#
+# xvfb is the only thing we add. The playwright image ships a chromium
+# binary expecting either headless mode or a real $DISPLAY; xvfb gives
+# us a virtual display that's indistinguishable from real-monitor
+# Chromium to rec.gov fingerprinting (which is the whole reason we
+# can't just flip headless=true).
+
+FROM mcr.microsoft.com/playwright:v1.60.0-jammy
+
+# Avoid interactive tzdata prompts during apt-get; America/Los_Angeles
+# matches the bot's domain reasoning (rec.gov releases are 7am PT).
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=America/Los_Angeles
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xvfb tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Lockfile-aware install so the image is reproducible run-to-run.
+COPY package*.json ./
+RUN npm install --omit=dev
+
+# Source. The campspot-bot/permit-bot/dashboard all live in this tree;
+# compose picks which one to run via `command:`.
+COPY . .
+
+# No EXPOSE / CMD here — each service in docker-compose-alienware.yml
+# sets its own command. Dashboard container does expose 8787; bots
+# don't expose anything.
