@@ -132,6 +132,23 @@ function humanDate(yyyymmdd) {
 //   'has_items_but_not_target' → cart has SOMETHING but not our site/date
 //   'empty'       → empty cart
 //   'unknown'     → couldn't parse
+// Extracted so the regex can be unit-tested against rec.gov-fixture text
+// without spinning Chromium. Pass 'In' or 'Out'.
+export function checkDateRegex(label) {
+    return new RegExp(`Check[-\\s]*${label}(?:\\s+Date)?:?[\\s\\n]+\\w+,?[\\s\\n]+(\\w+)[\\s\\n]+(\\d+),[\\s\\n]*(\\d{4})`, 'i')
+}
+
+// Returns { checkIn, checkOut } as 'Mon DD, YYYY' (e.g. 'Aug 17, 2026') or null
+// per field. Tolerant of all three label layouts seen on rec.gov.
+export function parseCartCheckDates(cartText) {
+    const ci = cartText.match(checkDateRegex('In'))
+    const co = cartText.match(checkDateRegex('Out'))
+    return {
+        checkIn:  ci ? `${ci[1]} ${ci[2]}, ${ci[3]}` : null,
+        checkOut: co ? `${co[1]} ${co[2]}, ${co[3]}` : null,
+    }
+}
+
 async function verifyCartHold(ctx, { siteNo, startDate, endDate, screenshotPath }) {
     const cartPage = await ctx.newPage()
     let cartShot = null
@@ -146,16 +163,23 @@ async function verifyCartHold(ctx, { siteNo, startDate, endDate, screenshotPath 
         cartText = await cartPage.evaluate(() => document.body.innerText)
 
         // Pull the literal check-in / check-out lines so we can report what we
-        // actually got, not just true/false. rec.gov uses TWO different labels
-        // depending on the view: "Check-In Date: Thu Jun 25, 2026" (full) and
-        // "Check-In: Thu Jul 23, 2026" (compact). The 2026-06-25 cascade lost
-        // a real hold because the regex only matched the full form and the
-        // compact-form cart fell through to `has_items_but_not_target` (no
-        // auto-release, no Discord/ntfy alert, hold expired silently).
-        const ciMatch = cartText.match(/Check-?\s*In(?:\s+Date)?:\s*\w+\s+(\w+)\s+(\d+),\s+(\d{4})/i)
-        const coMatch = cartText.match(/Check-?\s*Out(?:\s+Date)?:\s*\w+\s+(\w+)\s+(\d+),\s+(\d{4})/i)
-        if (ciMatch) observed.checkIn = `${ciMatch[1]} ${ciMatch[2]}, ${ciMatch[3]}`
-        if (coMatch) observed.checkOut = `${coMatch[1]} ${coMatch[2]}, ${coMatch[3]}`
+        // actually got, not just true/false. rec.gov uses THREE different
+        // label layouts seen in the wild:
+        //   1. "Check-In Date: Thu Jun 25, 2026"   (full, /cart legacy)
+        //   2. "Check-In: Thu Jul 23, 2026"        (compact, /cart legacy)
+        //   3. "Check-In\nMon, Aug 17, 2026"       (column header + new
+        //      line, current /cart + /orderdetails — no colon, comma after
+        //      the day-of-week)
+        // 2026-06-25 cascade lost a real hold because we only matched #1.
+        // 2026-06-27 Alienware cart test surfaced #3 and fell through to
+        // `has_items_but_not_target`, which auto-released after timeout —
+        // so a real opening would have been quietly discarded.
+        // Regex tweaks: `[-\s]*` between Check and In/Out (covers hyphen
+        // OR space separator), colon optional, comma after the dow optional
+        // and tolerant of either ", " or " " before the month token.
+        const parsed = parseCartCheckDates(cartText)
+        observed.checkIn = parsed.checkIn
+        observed.checkOut = parsed.checkOut
 
         const startHuman = humanDate(startDate)
         const endHuman = humanDate(endDate)
