@@ -12,13 +12,18 @@
 # Drop (flip to authoritative):
 #     sudo docker compose -f docker-compose-alienware.yml up -d
 #
+# Only the two auto-grab services need overriding: campspot-upper-pines
+# (drops `--auto-grab`) and permit-bot (uses `watch` instead of
+# `watch-auto`). The other 7 campspot-* services are notify-only by
+# default in the base compose, so they need no observe override.
+#
 # Caveat: in observe mode the permit-bot uses `watch` instead of
 # `watch-auto`. `watch` does NOT emit JSONL session logs (only
 # watch-auto does), so the dashboard's permit-bot panel will show
 # `liveness: absent, absentReason: "no session log"`. Expected.
 
 services:
-  campspot-bot:
-    command: ["node", "campspot-bot/campspot-bot.mjs", "watch"]
+  campspot-upper-pines:
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232447"]
   permit-bot:
     command: ["node", "permit-bot/permit-bot.mjs", "watch"]

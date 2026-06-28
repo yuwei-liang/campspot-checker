@@ -8,7 +8,8 @@
 #     ssh fredcorn@192.168.68.90 \
 #       'cd /home/fredcorn/campspot-checker && sudo docker compose -f docker-compose-alienware.yml up -d --build'
 #
-# For BURN-IN mode (observe-only, no real cart attempts) layer the override:
+# For BURN-IN mode (observe-only, no real cart attempts or permit grabs)
+# layer the override:
 #     sudo docker compose -f docker-compose-alienware.yml \
 #                         -f docker-compose-alienware.observe.yml up -d
 #
@@ -29,22 +30,76 @@
 # corrupts URLs (verified 2026-06-27: Discord webhook failed with
 # "Invalid URL" until we mounted .env so dotenv.config() in-bot could
 # parse it the same way it does on the Mac).
+#
+# MULTI-CAMPGROUND HUNTING:
+# One campspot-bot service per Yosemite campground. Only Upper Pines has
+# `--auto-grab` enabled — the others are notify-only because Chromium
+# can't share a user-data-dir across processes (one process holds the
+# profile lock at a time, verified 2026-06-27 during login bootstrap).
+# Notify-only bots poll the API every 30s and push Discord/ntfy when
+# openings appear; the human races those manually. Upper Pines is the
+# only one with enough cancellation traffic to justify the auto-grab
+# warm-window cost.
+
+x-campspot-base: &campspot-base
+  build:
+    context: .
+    dockerfile: Dockerfile.bots
+  image: campspot-checker:bots
+  restart: unless-stopped
+  shm_size: 1gb  # Chromium chokes on Docker's default 64MB /dev/shm
+  volumes:
+    - ./.env:/app/.env:ro                                # dotenv reads this
+    - bot-state:/app/campspot-bot/state                  # dashboard mounts ro
+    - chromium-profile:/app/permit-bot/.chromium-profile # only Upper Pines actually uses this
+    - campspot-screenshots:/app/campspot-bot/.screenshots
 
 services:
-  campspot-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile.bots
-    image: campspot-checker:bots
-    container_name: campspot-bot
-    restart: unless-stopped
-    shm_size: 1gb  # Chromium chokes on Docker's default 64MB /dev/shm
-    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--auto-grab"]
-    volumes:
-      - ./.env:/app/.env:ro                                # dotenv reads this
-      - bot-state:/app/campspot-bot/state                  # dashboard mounts ro
-      - chromium-profile:/app/permit-bot/.chromium-profile # shared with permit-bot
-      - campspot-screenshots:/app/campspot-bot/.screenshots
+  # Upper Pines: auto-grab on (warm chromium, races cancellations).
+  # The only campspot-bot that holds the chromium-profile lock.
+  campspot-upper-pines:
+    <<: *campspot-base
+    container_name: campspot-upper-pines
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--auto-grab", "--campground=232447"]
+
+  # Notify-only siblings: no --auto-grab → no warm chromium → no profile
+  # lock conflict with Upper Pines. Each writes its own status file
+  # (status-{campgroundId}.json) into the shared bot-state volume, which
+  # the dashboard renders as a separate panel.
+  campspot-lower-pines:
+    <<: *campspot-base
+    container_name: campspot-lower-pines
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232450"]
+
+  campspot-north-pines:
+    <<: *campspot-base
+    container_name: campspot-north-pines
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232449"]
+
+  campspot-hodgdon-meadow:
+    <<: *campspot-base
+    container_name: campspot-hodgdon-meadow
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232451"]
+
+  campspot-crane-flat:
+    <<: *campspot-base
+    container_name: campspot-crane-flat
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232452"]
+
+  campspot-wawona:
+    <<: *campspot-base
+    container_name: campspot-wawona
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232446"]
+
+  campspot-bridalveil-creek:
+    <<: *campspot-base
+    container_name: campspot-bridalveil-creek
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232453"]
+
+  campspot-tuolumne-meadows:
+    <<: *campspot-base
+    container_name: campspot-tuolumne-meadows
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232448"]
 
   permit-bot:
     build:
@@ -58,7 +113,7 @@ services:
     volumes:
       - ./.env:/app/.env:ro
       - permit-logs:/app/permit-bot/logs                   # dashboard mounts ro
-      - chromium-profile:/app/permit-bot/.chromium-profile # shared with campspot-bot
+      - chromium-profile:/app/permit-bot/.chromium-profile # shared with campspot-upper-pines
       - permit-screenshots:/app/permit-bot/.screenshots
       - permit-traces:/app/permit-bot/.traces
 
@@ -73,11 +128,11 @@ services:
       - "8787:8787"
     environment:
       - PORT=8787
-      # Point dashboardData.mjs at the volumes the bots write to.
-      # Without these the dashboard falls back to ./campspot-bot/state/status.json
-      # and ./permit-bot/logs in its own container — both empty — and renders
-      # a stale-looking but technically-correct "no data" page.
-      - CAMPSPOT_STATE_FILE=/app/campspot-bot/state/status.json
+      # CAMPSPOT_STATE_FILE points at one file in the state dir; the
+      # dashboard derives the dir from it via path.dirname() and globs
+      # for status-*.json — so we get one panel per campground bot
+      # automatically. PERMIT_BOT_LOG_DIR is the standard log glob root.
+      - CAMPSPOT_STATE_FILE=/app/campspot-bot/state/status-232447.json
       - PERMIT_BOT_LOG_DIR=/app/permit-bot/logs
     # Override the with-xvfb ENTRYPOINT — dashboard has no chromium so
     # starting Xvfb here is dead weight.
