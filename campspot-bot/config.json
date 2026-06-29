@@ -12,12 +12,12 @@
   },
   "campgrounds": [
     { "campgroundId": "232447", "campgroundName": "Upper Pines Campground", "park": "Yosemite" },
-    { "campgroundId": "232450", "campgroundName": "Lower Pines Campground", "park": "Yosemite" },
-    { "campgroundId": "232449", "campgroundName": "North Pines Campground", "park": "Yosemite" },
-    { "campgroundId": "232451", "campgroundName": "Hodgdon Meadow Campground", "park": "Yosemite" },
-    { "campgroundId": "232452", "campgroundName": "Crane Flat Campground", "park": "Yosemite" },
-    { "campgroundId": "232446", "campgroundName": "Wawona Campground", "park": "Yosemite" },
-    { "campgroundId": "232453", "campgroundName": "Bridalveil Creek Campground", "park": "Yosemite" },
-    { "campgroundId": "232448", "campgroundName": "Tuolumne Meadows Campground", "park": "Yosemite" }
+    { "campgroundId": "232450", "campgroundName": "Lower Pines Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
+    { "campgroundId": "232449", "campgroundName": "North Pines Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
+    { "campgroundId": "232451", "campgroundName": "Hodgdon Meadow Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
+    { "campgroundId": "232452", "campgroundName": "Crane Flat Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
+    { "campgroundId": "232446", "campgroundName": "Wawona Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
+    { "campgroundId": "232453", "campgroundName": "Bridalveil Creek Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
+    { "campgroundId": "232448", "campgroundName": "Tuolumne Meadows Campground", "park": "Yosemite", "pollIntervalMs": 180000 }
   ]
 }
