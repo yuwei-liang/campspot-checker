@@ -40,6 +40,15 @@ RUN npm install --omit=dev
 # compose picks which one to run via `command:`.
 COPY . .
 
+# Entrypoint starts Xvfb + sets DISPLAY before exec'ing the CMD. We
+# don't use `xvfb-run` because its SIGUSR1-based readiness detection
+# hangs under Docker (Xvfb signal never reaches xvfb-run, child never
+# exec'd — verified 2026-06-27 on Alienware). Dashboard service
+# overrides this since it has no chromium.
+COPY with-xvfb /usr/local/bin/with-xvfb
+RUN chmod +x /usr/local/bin/with-xvfb
+ENTRYPOINT ["/usr/local/bin/with-xvfb"]
+
 # No EXPOSE / CMD here — each service in docker-compose-alienware.yml
 # sets its own command. Dashboard container does expose 8787; bots
 # don't expose anything.

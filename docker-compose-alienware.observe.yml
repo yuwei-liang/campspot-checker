@@ -1,0 +1,29 @@
+# Burn-in / observe-mode override for the Alienware stack.
+# Use during the parallel-to-Mac validation window so the Alienware bots
+# poll-and-notify but DO NOT compete with the Mac bot for real cart holds
+# or permit grabs. Once we've seen N hours of clean cycle parity, stop
+# using this override and the base compose's `watch --auto-grab` /
+# `watch-auto` commands take over.
+#
+# Apply:
+#     sudo docker compose -f docker-compose-alienware.yml \
+#                         -f docker-compose-alienware.observe.yml up -d
+#
+# Drop (flip to authoritative):
+#     sudo docker compose -f docker-compose-alienware.yml up -d
+#
+# Only the two auto-grab services need overriding: campspot-upper-pines
+# (drops `--auto-grab`) and permit-bot (uses `watch` instead of
+# `watch-auto`). The other 7 campspot-* services are notify-only by
+# default in the base compose, so they need no observe override.
+#
+# Caveat: in observe mode the permit-bot uses `watch` instead of
+# `watch-auto`. `watch` does NOT emit JSONL session logs (only
+# watch-auto does), so the dashboard's permit-bot panel will show
+# `liveness: absent, absentReason: "no session log"`. Expected.
+
+services:
+  campspot-upper-pines:
+    command: ["node", "campspot-bot/campspot-bot.mjs", "watch", "--campground=232447"]
+  permit-bot:
+    command: ["node", "permit-bot/permit-bot.mjs", "watch"]
