@@ -1,0 +1,20 @@
+{
+  "permitId": "233262",
+  "permitName": "Inyo National Forest Wilderness Permits — Little Lakes Valley",
+  "targets": [
+    {
+      "divisionId": "451",
+      "name": "Little Lakes Valley",
+      "nameTokens": ["Little Lakes Valley"]
+    }
+  ],
+  "targetDates": ["2026-07-03"],
+  "_targetDates_comment": "Friday 7/3/2026 walk-up start for the long weekend, party of 3. Inyo walk-up permits release 14 days ahead at 7am PT; 7/3 released on 2026-06-19 and is currently sold out (cell suppressed). Monitor catches cancellations.",
+  "partySize": 3,
+  "pollIntervalMs": 30000,
+  "burstWindow": {
+    "startIso": null,
+    "endIso": null,
+    "burstIntervalMs": 30000
+  }
+}

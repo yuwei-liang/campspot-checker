@@ -24,9 +24,12 @@ const log = {
     error: (msg) => console.error(`[${new Date().toISOString()}] ERR  ${msg}`),
 }
 
+// Default config path; can be overridden by --config=<path> at the CLI.
+// Set once at dispatcher startup so every cmdX call sees the same value.
+let configPath = path.resolve('./permit-bot/config.json')
+
 function loadConfig() {
-    const p = path.resolve('./permit-bot/config.json')
-    const raw = readFileSync(p, 'utf-8')
+    const raw = readFileSync(configPath, 'utf-8')
     return JSON.parse(raw)
 }
 
@@ -1209,6 +1212,10 @@ const kv = Object.fromEntries(
 
 ;(async () => {
     try {
+        if (kv.config) {
+            configPath = path.resolve(kv.config)
+            log.info(`Using config: ${configPath}`)
+        }
         const accountIndex = kv.account ? Number(kv.account) : 1
         switch (subcommand) {
             case 'login':
@@ -1311,6 +1318,10 @@ const kv = Object.fromEntries(
             }
             default:
                 console.log(`Usage:
+  Any subcommand accepts --config=<path> to point at an alternate permit config
+  (default: permit-bot/config.json). Used to monitor permits beyond LYV (e.g.
+  permit-bot/config.little-lakes-valley.json).
+
   node permit-bot/permit-bot.mjs login [--account=N]              # interactive rec.gov login (default account=1)
   node permit-bot/permit-bot.mjs check-session [--account=N]      # verify saved login still works
   node permit-bot/permit-bot.mjs probe                             # one-shot availability snapshot
