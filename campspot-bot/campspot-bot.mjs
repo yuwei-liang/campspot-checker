@@ -2,7 +2,7 @@
 import * as dotenv from 'dotenv'
 dotenv.config()
 
-import { createReadStream } from 'node:fs'
+import { createReadStream, readFileSync } from 'node:fs'
 import path from 'node:path'
 import axios from 'axios'
 import FormData from 'form-data'
@@ -11,6 +11,13 @@ import CampspotChecker from './CampspotChecker.mjs'
 import { tryGrabCampsite, releaseCampspotCart, warmCampspotWindow } from './CampspotCartBot.mjs'
 import { windowDisplay } from './windowDisplay.mjs'
 import { loadConfigsFromFile, selectCampground } from './configLoader.mjs'
+import {
+    shouldPause,
+    pauseFor,
+    pauseStatus,
+    inheritPauseFromPrevious,
+    AUTO_GRAB_PAUSE_HOURS,
+} from './autoGrabPause.mjs'
 import { httpsAgent } from '../permit-bot/dnsBypass.mjs'
 import { writeBotState, appendEvent, resetBackoffWithRecovery } from '../dashboard/botState.mjs'
 
@@ -169,6 +176,37 @@ async function cmdRelease({ accountIndex = 1 } = {}) {
     log.info(`removed=${r.removed} state=${r.state}`)
 }
 
+// unpause: clear an active auto-grab pause on one campground's state file
+// (or every campground if no id is given). The running watch process picks
+// this up on its next poll — no restart needed. Use case: user booked the
+// hold and released the account for another race, or bot mis-triggered
+// pause on a state we didn't actually want to protect against.
+async function cmdUnpause({ campgroundId }) {
+    const configs = loadConfigsFromFile(CONFIG_FILE)
+    const targets = campgroundId
+        ? [selectCampground(configs, campgroundId)]
+        : configs
+    for (const cfg of targets) {
+        const path = stateFileFor(cfg.campgroundId)
+        let state
+        try {
+            state = JSON.parse(readFileSync(path, 'utf-8'))
+        } catch {
+            log.warn(`no state file for ${cfg.campgroundName} (${cfg.campgroundId}) — nothing to unpause`)
+            continue
+        }
+        const wasPaused = state?.autoGrab?.pausedUntil
+        if (!wasPaused) {
+            log.info(`${cfg.campgroundName} (${cfg.campgroundId}): not paused`)
+            continue
+        }
+        state.autoGrab.pausedUntil = null
+        state.autoGrab.pauseReason = null
+        writeBotState(path, state)
+        log.info(`${cfg.campgroundName} (${cfg.campgroundId}): cleared pause (was until ${wasPaused})`)
+    }
+}
+
 // watch: poll continuously, notify on new openings. With --auto-grab, fires
 // CampspotCartBot on the highest-ranked new stay (sequentially — one cart at
 // a time so we don't trigger captchas).
@@ -193,6 +231,17 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1, campgroundId } = {
     let cartInFlight = false
     const recentlyAttempted = new Map() // key -> ts
 
+    // Read the previous state file so an in-flight auto-grab pause (set after
+    // a cart attempt returned items) survives a process restart. Without this,
+    // restarting during the cooldown window would let the bot immediately fire
+    // on the next opening and potentially double-book the same account.
+    let previousState = null
+    try { previousState = JSON.parse(readFileSync(stateFileFor(config.campgroundId), 'utf-8')) } catch {}
+    const inherited = inheritPauseFromPrevious(previousState)
+    if (inherited.pausedUntil) {
+        log.warn(`auto-grab paused (inherited from previous run) until ${inherited.pausedUntil} — reason: ${inherited.pauseReason}`)
+    }
+
     // Dashboard state. Cumulative counters + a bounded ring buffer of recent
     // events. Atomic-rename via writeBotState so the dashboard never observes
     // a half-written JSON file.
@@ -212,6 +261,11 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1, campgroundId } = {
             minPeople: config.minPeople,
             pollIntervalMs: config.pollIntervalMs,
             autoGrab,
+        },
+        autoGrab: {
+            enabled: autoGrab,
+            pausedUntil: inherited.pausedUntil,
+            pauseReason: inherited.pauseReason,
         },
         metrics: {
             cycles: 0,
@@ -330,7 +384,32 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1, campgroundId } = {
                     },
                 )
 
-                if (autoGrab && !cartInFlight) {
+                // Pause gate: if a recent cart attempt left items in the
+                // cart, refuse to auto-grab for the cooldown window so we
+                // don't grab a second site while the user is still paying
+                // for the first (accidental double-book). Auto-clear on
+                // expiry. Notifies stay on regardless.
+                const ps = pauseStatus(dashState.autoGrab, new Date())
+                if (ps.expired) {
+                    log.info(`auto-grab pause expired — resuming`)
+                    appendEvent(dashState, {
+                        type: 'auto_grab_resumed',
+                        wasReason: dashState.autoGrab.pauseReason,
+                    })
+                    dashState.autoGrab.pausedUntil = null
+                    dashState.autoGrab.pauseReason = null
+                    persistState()
+                }
+                if (autoGrab && ps.active) {
+                    appendEvent(dashState, {
+                        type: 'skipped_paused',
+                        pausedUntil: dashState.autoGrab.pausedUntil,
+                        reason: dashState.autoGrab.pauseReason,
+                        newStayCount: newStays.length,
+                    })
+                    persistState()
+                }
+                if (autoGrab && !cartInFlight && !ps.active) {
                     // Per-(site, dates) cooldown so we don't burn the warm
                     // browser on the same slot every 20s while the API
                     // re-emits it. 1h was too aggressive — user complained
@@ -439,6 +518,24 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1, campgroundId } = {
                                     observed: r.observed || null,
                                     latencyMs: r.latencyMs?.total ?? null,
                                 })
+                                // Post-hold auto-pause: if items landed in the
+                                // cart (held / has_items_but_not_target /
+                                // wrong_trip-kept), park auto-grab for 24h so
+                                // we don't book a SECOND site while the user
+                                // is still paying for this one. shouldPause()
+                                // encodes which states qualify.
+                                if (shouldPause(r)) {
+                                    const reason = `cart_attempt on site ${toFire.siteNo} ${toFire.startDate}→${toFire.endDate} returned ${r.cartState}`
+                                    const p = pauseFor({ hours: AUTO_GRAB_PAUSE_HOURS, reason })
+                                    dashState.autoGrab.pausedUntil = p.pausedUntil
+                                    dashState.autoGrab.pauseReason = p.pauseReason
+                                    log.warn(`auto-grab paused until ${p.pausedUntil} — ${reason}`)
+                                    appendEvent(dashState, {
+                                        type: 'auto_grab_paused',
+                                        pausedUntil: p.pausedUntil,
+                                        reason,
+                                    })
+                                }
                                 persistState()
                                 const status = r.cartState === 'held'
                                     ? '✅ **CART HOLD CONFIRMED** — go check out!'
@@ -547,6 +644,8 @@ const kv = Object.fromEntries(
                 await cmdRelease({ accountIndex }); break
             case 'watch':
                 await cmdWatch({ autoGrab: flags.has('--auto-grab'), accountIndex, campgroundId }); break
+            case 'unpause':
+                await cmdUnpause({ campgroundId }); break
             default:
                 console.log(`Usage:
   node campspot-bot/campspot-bot.mjs check [--campground=ID]                              # one-shot availability scan
@@ -554,6 +653,7 @@ const kv = Object.fromEntries(
                                                                                           # dry-run by default; --for-real adds to cart
   node campspot-bot/campspot-bot.mjs release-cart [--account=N]                           # clear holds (test cleanup)
   node campspot-bot/campspot-bot.mjs watch [--campground=ID] [--auto-grab] [--account=N]  # poll continuously, notify; --auto-grab fires the cart bot
+  node campspot-bot/campspot-bot.mjs unpause [--campground=ID]                            # clear an active auto-grab pause (default: all campgrounds)
 
 --campground=ID picks one entry from config.campgrounds[]; defaults to the first.
 Run one watch process per campground (tmux) to fan out across multiple targets.
