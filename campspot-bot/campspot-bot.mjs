@@ -446,7 +446,16 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1, campgroundId } = {
                                         ? (r.autoReleased
                                             ? `⚠️ **WRONG TRIP** — rec.gov gave us ${r.observed?.checkIn ?? '?'} → ${r.observed?.checkOut ?? '?'} (wanted ${toFire.startDate}→${toFire.endDate}, ${r.partialNights ?? '?'}n < minNights). Auto-released.`
                                             : `🟡 **PARTIAL HOLD** — ${r.partialNights ?? '?'}n hold (${r.observed?.checkIn ?? '?'} → ${r.observed?.checkOut ?? '?'}), wanted ${toFire.nights}n. Decide before 15-min timer expires.`)
-                                        : `⚠️ auto-grab finished — cart state: ${r.cartState ?? r.reason ?? 'unknown'}`
+                                        : r.cartState === 'has_items_but_not_target'
+                                            // 2026-07-01: the winning cart came back with this
+                                            // state because the verifier regex couldn't parse
+                                            // the new /orderdetails page (fixed in PR #35). Bot
+                                            // logged a routine warning, user *happened* to see
+                                            // it and paid before the 15-min timer expired.
+                                            // Don't rely on luck: any cart with items → treat
+                                            // as maybe-a-win, loud alert, direct action link.
+                                            ? `🚨 **CART HAS ITEMS — go verify + PAY NOW at https://www.recreation.gov/cart** (bot couldn't confirm site/dates match; could be your target or unrelated. 15-min timer running.)`
+                                            : `⚠️ auto-grab finished — cart state: ${r.cartState ?? r.reason ?? 'unknown'}`
                                 await discordPush([
                                     status,
                                     `**Site ${toFire.siteNo}** — ${toFire.startDate} → ${toFire.endDate} (${toFire.nights}n)${toFire !== candidate ? ` _(shortened from ${candidate.nights}n)_` : ''}`,
@@ -474,6 +483,21 @@ async function cmdWatch({ autoGrab = false, accountIndex = 1, campgroundId } = {
                                             click: 'https://www.recreation.gov/cart',
                                             priority: 'max',
                                             tags: 'tent,warning,rotating_light',
+                                        },
+                                    )
+                                } else if (r.cartState === 'has_items_but_not_target') {
+                                    // Bot verifier couldn't confirm the cart has our target
+                                    // site+dates, but SOMETHING is in the cart. Almost always
+                                    // this is a win the parser missed (see 2026-07-01 flow).
+                                    // Loud phone alert with direct link so the user completes
+                                    // payment inside the 15-min window instead of missing it.
+                                    await pushNtfy(
+                                        `CHECK CART: ${config.campgroundName} site ${toFire.siteNo}`,
+                                        `Cart has items but bot couldn't verify site/dates. Open rec.gov/cart NOW — could be your ${toFire.nights}n hold. 15-min timer running.`,
+                                        {
+                                            click: 'https://www.recreation.gov/cart',
+                                            priority: 'max',
+                                            tags: 'tent,eyes,rotating_light',
                                         },
                                     )
                                 }
