@@ -47,13 +47,87 @@ const NTFY_TOPIC_URL = process.env.NTFY_TOPIC_URL || null
 // Bearer token. Public ntfy.sh topics ignore it. Leaving unset keeps the
 // public-topic path working, so this is a strict superset of the old behavior.
 const NTFY_AUTH_TOKEN = process.env.NTFY_AUTH_TOKEN || null
+// Telegram bot (opt-in via .env). Bot token from @BotFather, chat_id from
+// the getUpdates dance in the setup doc. Both required to enable — either
+// missing = skip Telegram silently.
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || null
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || null
 
 function pickConfig(campgroundIdArg) {
     const configs = loadConfigsFromFile(CONFIG_FILE)
     return selectCampground(configs, campgroundIdArg)
 }
 
+// Convert Discord-flavored **bold** to Telegram HTML <b>bold</b>. Escape
+// <, >, & first so user content can't inject markup.
+function telegramFormatText(text) {
+    const escaped = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+    return escaped.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+}
+
+async function pushTelegram(text, screenshotPath = null) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return { ok: false, status: 0, skipped: true }
+    try {
+        const html = telegramFormatText(text)
+        if (screenshotPath) {
+            // sendPhoto — caption max 1024 chars, so overflow spills into
+            // a follow-up sendMessage.
+            const form = new FormData()
+            form.append('chat_id', TELEGRAM_CHAT_ID)
+            form.append('parse_mode', 'HTML')
+            form.append('caption', html.slice(0, 1024))
+            form.append('photo', createReadStream(screenshotPath), {
+                filename: path.basename(screenshotPath),
+                contentType: 'image/png',
+            })
+            await axios.post(
+                `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+                form,
+                {
+                    timeout: 20000,
+                    httpsAgent,
+                    headers: form.getHeaders(),
+                    maxBodyLength: Infinity,
+                    maxContentLength: Infinity,
+                },
+            )
+            if (html.length > 1024) {
+                await axios.post(
+                    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+                    { chat_id: TELEGRAM_CHAT_ID, text: html.slice(1024, 1024 + 4096), parse_mode: 'HTML' },
+                    { timeout: 10000, httpsAgent },
+                )
+            }
+            return { ok: true, status: 200 }
+        }
+        const res = await axios.post(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+            { chat_id: TELEGRAM_CHAT_ID, text: html.slice(0, 4096), parse_mode: 'HTML' },
+            { timeout: 10000, httpsAgent },
+        )
+        return { ok: true, status: res.status }
+    } catch (err) {
+        log.warn(`Telegram push failed: ${err.message}`)
+        return { ok: false, status: err.response?.status ?? 0, error: err.message }
+    }
+}
+
+// Fan-out to every configured chat channel. Runs Discord + Telegram in
+// parallel via allSettled so a Telegram outage can't drop a Discord push
+// (or vice versa). Kept named `discordPush` for now to avoid touching
+// every call site — the semantics are "push to all chat channels."
 async function discordPush(text, screenshotPath = null) {
+    const [discordRes] = await Promise.allSettled([
+        pushDiscordOnly(text, screenshotPath),
+        pushTelegram(text, screenshotPath),
+    ])
+    return discordRes.status === 'fulfilled' ? discordRes.value : { ok: false, status: 0 }
+}
+
+async function pushDiscordOnly(text, screenshotPath = null) {
     if (!DISCORD_WEBHOOK_URL) {
         log.warn('No CAMPSPOT_DISCORD_WEBHOOK_URL / WEBHOOK_URL in .env — skipping Discord push.')
         return { ok: false, status: 0 }
