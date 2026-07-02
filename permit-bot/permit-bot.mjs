@@ -33,6 +33,10 @@ function loadConfig() {
 // ntfy topic from existing .env; same channel as the campground bot so the user
 // only has one subscription to manage.
 const NTFY_TOPIC_URL = process.env.NTFY_TOPIC_URL || null
+// Self-hosted ntfy (auth-default-access: deny-all) requires a per-producer
+// Bearer token. Public ntfy.sh topics ignore it — leaving unset keeps the
+// public-topic path working, so this is a strict superset of old behavior.
+const NTFY_AUTH_TOKEN = process.env.NTFY_AUTH_TOKEN || null
 // Permit-bot has its own Discord channel so cart-hold confirmations don't
 // drown out the campspot-checker's campground alerts. Falls back to the
 // campspot WEBHOOK_URL if no permit-specific one is set.
@@ -148,6 +152,7 @@ async function pushNtfy(title, message, opts = {}) {
             'Priority': opts.priority || '5',
             'Tags': opts.tags || 'mountain,bell',
         }
+        if (NTFY_AUTH_TOKEN) headers['Authorization'] = `Bearer ${NTFY_AUTH_TOKEN}`
         if (opts.click) headers['Click'] = opts.click
         if (opts.actions?.length) {
             // ntfy "Actions" header is comma-separated, ASCII-only labels.

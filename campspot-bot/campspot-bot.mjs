@@ -43,6 +43,10 @@ const DISCORD_WEBHOOK_URL = process.env.CAMPSPOT_DISCORD_WEBHOOK_URL
     || process.env.WEBHOOK_URL
     || null
 const NTFY_TOPIC_URL = process.env.NTFY_TOPIC_URL || null
+// Self-hosted ntfy (auth-default-access: deny-all) requires a per-producer
+// Bearer token. Public ntfy.sh topics ignore it. Leaving unset keeps the
+// public-topic path working, so this is a strict superset of the old behavior.
+const NTFY_AUTH_TOKEN = process.env.NTFY_AUTH_TOKEN || null
 
 function pickConfig(campgroundIdArg) {
     const configs = loadConfigsFromFile(CONFIG_FILE)
@@ -87,6 +91,7 @@ async function pushNtfy(title, message, opts = {}) {
             'Priority': opts.priority || '5',
             'Tags': opts.tags || 'tent,mountain',
         }
+        if (NTFY_AUTH_TOKEN) headers['Authorization'] = `Bearer ${NTFY_AUTH_TOKEN}`
         if (opts.click) headers['Click'] = opts.click
         if (opts.actions?.length) {
             headers['Actions'] = opts.actions.map(a =>
