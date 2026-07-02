@@ -11,7 +11,14 @@
     "autoCart": false
   },
   "campgrounds": [
-    { "campgroundId": "232447", "campgroundName": "Upper Pines Campground", "park": "Yosemite" },
+    {
+      "campgroundId": "232447",
+      "campgroundName": "Upper Pines Campground",
+      "park": "Yosemite",
+      "_note": "user already holds site 233 for 2026-09-24→09-28 (booked 2026-07-01). Narrowed range = only alert on 2nd sites for the same trip dates so extra friends can join. Auto-grab pause (PR #39) will cap accidental double-book at 1.",
+      "rangeStartDate": "2026-09-24",
+      "rangeEndDate": "2026-09-28"
+    },
     { "campgroundId": "232450", "campgroundName": "Lower Pines Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
     { "campgroundId": "232449", "campgroundName": "North Pines Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
     { "campgroundId": "232451", "campgroundName": "Hodgdon Meadow Campground", "park": "Yosemite", "pollIntervalMs": 180000 },
