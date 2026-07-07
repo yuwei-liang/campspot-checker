@@ -117,6 +117,24 @@ services:
       - permit-screenshots:/app/permit-bot/.screenshots
       - permit-traces:/app/permit-bot/.traces
 
+  # Inyo NF Little Lakes Valley walk-up cancellation watcher. Pure HTTP poll —
+  # no chromium, no cart automation. `watch` pings ntfy/Discord on any
+  # transition from suppressed/zero → remaining > 0. Targets 2026-07-03
+  # (party of 3) per permit-bot/config.little-lakes-valley.json.
+  permit-bot-llv:
+    build:
+      context: .
+      dockerfile: Dockerfile.bots
+    image: campspot-checker:bots
+    container_name: permit-bot-llv
+    restart: unless-stopped
+    command: [
+      "node", "permit-bot/permit-bot.mjs", "watch",
+      "--config=permit-bot/config.little-lakes-valley.json"
+    ]
+    volumes:
+      - ./.env:/app/.env:ro
+
   dashboard:
     build:
       context: .
